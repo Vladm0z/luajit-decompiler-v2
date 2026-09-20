@@ -90,7 +90,12 @@ void Lua::write_block(const Ast::Function& function, const std::vector<Ast::Stat
 			break;
 		case Ast::AST_STATEMENT_GOTO:
 			write_indent();
-			write("goto ", function.labels[block[i]->instruction.label].name);
+			if (block[i]->instruction.label < function.labels.size()) {
+				write("goto ", function.labels[block[i]->instruction.label].name);
+			} else {
+				// Graceful fallback: output a comment with the target ID instead of crashing
+				write("goto --[[ UNRESOLVED_LABEL_", std::to_string(block[i]->instruction.target), " ]]");
+			}
 			break;
 		case Ast::AST_STATEMENT_NUMERIC_FOR:
 			write_indent();
@@ -233,6 +238,8 @@ void Lua::write_block(const Ast::Function& function, const std::vector<Ast::Stat
 			write_indent();
 			write_assignment(block[i]->assignment.variables, block[i]->assignment.expressions, " = ", i);
 			break;
+		
+
 		case Ast::AST_STATEMENT_FUNCTION_CALL:
 			write_indent();
 			write_function_call(*block[i]->assignment.expressions.back()->functionCall, i);
@@ -318,7 +325,12 @@ void Lua::write_block(const Ast::Function& function, const std::vector<Ast::Stat
 			break;
 		case Ast::AST_STATEMENT_LABEL:
 			write_indent();
-			write("::", function.labels[block[i]->instruction.label].name, "::");
+			if (block[i]->instruction.label < function.labels.size()) {
+				write("::", function.labels[block[i]->instruction.label].name, "::");
+			} else {
+				// Graceful fallback
+				write("::UNRESOLVED_LABEL_", std::to_string(block[i]->instruction.target), "::");
+			}
 			break;
 		default:
 			throw nullptr;

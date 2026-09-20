@@ -323,42 +323,90 @@ struct Ast::ConditionBuilder {
 		node->inverted = targetNode->inverted;
 	}
 
+	Expression* build_comparison(const Node::TYPE& type, const bool& inverted, Expression* const& leftOperand, Expression* const& rightOperand) {
+		Node::TYPE finalType = type;
+
+		switch (type) {
+		case Node::LESS_THAN:
+			finalType = inverted ? Node::GREATER_EQUAL : Node::LESS_THAN;
+			break;
+		case Node::LESS_EQUAL:
+			finalType = inverted ? Node::GREATER_THEN : Node::LESS_EQUAL;
+			break;
+		case Node::GREATER_THEN:
+			finalType = inverted ? Node::LESS_EQUAL : Node::GREATER_THEN;
+			break;
+		case Node::GREATER_EQUAL:
+			finalType = inverted ? Node::LESS_THAN : Node::GREATER_EQUAL;
+			break;
+
+		case Node::NOT_LESS_THAN:
+			finalType = inverted ? Node::LESS_THAN : Node::GREATER_EQUAL;
+			break;
+		case Node::NOT_LESS_EQUAL:
+			finalType = inverted ? Node::LESS_EQUAL : Node::GREATER_THEN;
+			break;
+		case Node::NOT_GREATER_THEN:
+			finalType = inverted ? Node::GREATER_THEN : Node::LESS_EQUAL;
+			break;
+		case Node::NOT_GREATER_EQUAL:
+			finalType = inverted ? Node::GREATER_EQUAL : Node::LESS_THAN;
+			break;
+
+		default:
+			throw nullptr;
+		}
+
+		return build_binary(finalType, leftOperand, rightOperand);
+	}
+
+	
 	Expression* build_expression(Node* const& node) {
 		switch (node->type) {
 		case Node::LESS_THAN:
 		case Node::LESS_EQUAL:
 		case Node::GREATER_THEN:
 		case Node::GREATER_EQUAL:
-			return node->inverted ? build_not(build_binary(node->type, (*node->expressions)[0], (*node->expressions)[1])) : build_binary(node->type, (*node->expressions)[0], (*node->expressions)[1]);
 		case Node::NOT_LESS_THAN:
 		case Node::NOT_LESS_EQUAL:
 		case Node::NOT_GREATER_THEN:
 		case Node::NOT_GREATER_EQUAL:
-			return node->inverted ? build_binary(node->type, (*node->expressions)[0], (*node->expressions)[1]) : build_not(build_binary(node->type, (*node->expressions)[0], (*node->expressions)[1]));
+			return build_comparison(node->type, node->inverted, (*node->expressions)[0], (*node->expressions)[1]);
+
 		case Node::EQUAL:
 			return build_binary(node->inverted ? Node::NOT_EQUAL : Node::EQUAL, (*node->expressions)[0], (*node->expressions)[1]);
+
 		case Node::NOT_EQUAL:
 			return build_binary(node->inverted ? Node::EQUAL : Node::NOT_EQUAL, (*node->expressions)[0], (*node->expressions)[1]);
+
 		case Node::TRUTHY_TEST:
 			return node->inverted ? build_not((*node->expressions).back()) : (*node->expressions).back();
+
 		case Node::FALSY_TEST:
 			return node->inverted ? (*node->expressions).back() : build_not((*node->expressions).back());
+
 		case Node::BOOL_TRUTHY_TEST:
 			return node->inverted ? build_not((*node->expressions).back()) : build_not(build_not((*node->expressions).back()));
+
 		case Node::BOOL_FALSY_TEST:
 			return node->inverted ? build_not(build_not((*node->expressions).back())) : build_not((*node->expressions).back());
+
 		case Node::UNCONDITIONAL_TRUE:
 			return ast.new_primitive(node->inverted ? 1 : 2);
+
 		case Node::UNCONDITIONAL_FALSE:
 			return ast.new_primitive(node->inverted ? 2 : 1);
+
 		case Node::AND:
 		case Node::OR:
 			return node->inverted ? build_not(build_binary(node->type, build_expression(node->leftNode), build_expression(node->rightNode)))
 				: build_binary(node->type, build_expression(node->leftNode), build_expression(node->rightNode));
+
 		case Node::NOT_AND:
 		case Node::NOT_OR:
 			return node->inverted ? build_binary(node->type, build_expression(node->leftNode), build_expression(node->rightNode))
 				: build_not(build_binary(node->type, build_expression(node->leftNode), build_expression(node->rightNode)));
+
 		default:
 			throw nullptr;
 		}

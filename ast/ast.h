@@ -13,6 +13,7 @@ private:
 	struct Local;
 	struct SlotScope;
 	struct ConditionBuilder;
+	struct ConditionGraph; 
 
 public:
 	struct Expression;
@@ -36,7 +37,7 @@ public:
 
 private:
 
-	#include "conditionBuilder.h";
+	#include "conditionGraph.h"
 
 	struct BlockInfo {
 		uint32_t index = INVALID_ID;
@@ -62,6 +63,9 @@ private:
 	void build_if_statements(Function& function, std::vector<Statement*>& block, BlockInfo* const& previousBlock);
 	void clean_up(Function& function);
 	void clean_up_block(Function& function, std::vector<Statement*>& block, uint32_t& variableCounter, uint32_t& iteratorCounter, BlockInfo* const& previousBlock);
+	static std::string sanitize_identifier(const std::string& name);
+	std::string infer_variable_name(Function& function, const Expression* expression, const std::string& fallback);
+	static bool slot_used_as_table(const std::vector<Statement*>& block, const uint8_t& slot);
 	Expression* new_slot(const uint8_t& slot);
 	Expression* new_literal(const uint8_t& literal);
 	Expression* new_signed_literal(const uint16_t& signedLiteral);

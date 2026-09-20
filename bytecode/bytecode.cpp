@@ -65,9 +65,13 @@ void Bytecode::read_prototypes() {
 void Bytecode::open_file() {
 	file = CreateFileA(filePath.c_str(), GENERIC_READ, NULL, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL | FILE_FLAG_SEQUENTIAL_SCAN, NULL);
 	assert(file != INVALID_HANDLE_VALUE, "Unable to open file", filePath, DEBUG_INFO);
-	fileSize |= (uint64_t)GetFileSize(file, (DWORD*)&fileSize) << 32;
-	fileSize = (fileSize >> 32) | (fileSize << 32);
+
+	LARGE_INTEGER size = {};
+	assert(GetFileSizeEx(file, &size) != 0, "Failed to get file size", filePath, DEBUG_INFO);
+
+	fileSize = static_cast<uint64_t>(size.QuadPart);
 	assert(fileSize >= MIN_FILE_SIZE, "File is too small or empty", filePath, DEBUG_INFO);
+
 	bytesUnread = fileSize;
 }
 
@@ -95,6 +99,8 @@ uint32_t Bytecode::read_uleb128() {
 
 		do {
 			bitShift += 7;
+			assert(bitShift <= 28, "ULEB128 value is too large", filePath, DEBUG_INFO);
+
 			read_file(1);
 			uleb128 |= (fileBuffer[0] & 0x7F) << bitShift;
 		} while (fileBuffer[0] >= 0x80);

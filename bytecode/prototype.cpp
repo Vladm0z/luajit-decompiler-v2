@@ -76,6 +76,11 @@ void Bytecode::Prototype::read_upvalues() {
 	}
 }
 
+uint8_t Bytecode::Prototype::peek_next_byte() {
+	assert(prototypeSize < bytecode.fileBuffer.size(), "Prototype read would exceed end of buffer", bytecode.filePath, DEBUG_INFO);
+	return bytecode.fileBuffer[prototypeSize];
+}
+
 void Bytecode::Prototype::read_constants(std::vector<Prototype*>& unlinkedPrototypes) {
 	uint32_t type;
 
@@ -127,13 +132,13 @@ void Bytecode::Prototype::read_constants(std::vector<Prototype*>& unlinkedProtot
 
 void Bytecode::Prototype::read_number_constants() {
 	for (uint32_t i = 0; i < numberConstants.size(); i++) {
-		if (bytecode.fileBuffer[prototypeSize] & 0x01) {
+		if (peek_next_byte() & 0x01) {
 			numberConstants[i].type = BC_KNUM_NUM;
 			numberConstants[i].number = get_uleb128_33();
 			numberConstants[i].number |= (uint64_t)get_uleb128() << 32;
 		} else {
 			numberConstants[i].type = BC_KNUM_INT;
-			numberConstants[i].integer = get_uleb128_33();
+			numberConstants[i].integer = (uint32_t)get_uleb128_33();
 		}
 	}
 }
@@ -210,6 +215,8 @@ uint32_t Bytecode::Prototype::get_uleb128() {
 
 		do {
 			bitShift += 7;
+			assert(bitShift <= 28, "ULEB128 value is too large", bytecode.filePath, DEBUG_INFO);
+
 			byte = get_next_byte();
 			uleb128 |= (uint32_t)(byte & 0x7F) << bitShift;
 		} while (byte >= 0x80);
@@ -218,18 +225,20 @@ uint32_t Bytecode::Prototype::get_uleb128() {
 	return uleb128;
 }
 
-uint32_t Bytecode::Prototype::get_uleb128_33() {
-	uint32_t uleb128_33 = get_next_byte() >> 1;
+uint64_t Bytecode::Prototype::get_uleb128_33() {
+	uint64_t uleb128_33 = get_next_byte() >> 1;
 
 	if (uleb128_33 >= 0x40) {
 		uleb128_33 &= 0x3F;
 		uint8_t byte;
-		int8_t bitShift = -1;
+		int16_t bitShift = -1;
 
 		do {
 			bitShift += 7;
+			assert(bitShift <= 34, "ULEB128_33 value is too large", bytecode.filePath, DEBUG_INFO);
+
 			byte = get_next_byte();
-			uleb128_33 |= (uint32_t)(byte & 0x7F) << bitShift;
+			uleb128_33 |= (uint64_t)(byte & 0x7F) << bitShift;
 		} while (byte >= 0x80);
 	}
 
@@ -267,12 +276,10 @@ Bytecode::TableConstant Bytecode::Prototype::get_table_constant() {
 		break;
 	default:
 		tableConstant.type = BC_KTAB_STR;
-		tableConstant.string.resize(type - BC_KGC_STR);
-
+		tableConstant.string.resize(type - BC_KTAB_STR);
 		for (uint32_t i = 0; i < tableConstant.string.size(); i++) {
 			tableConstant.string[i] = get_next_byte();
 		}
-
 		break;
 	}
 

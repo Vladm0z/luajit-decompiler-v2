@@ -121,93 +121,107 @@ static bool decompile_files_recursively(const Directory& directory) {
 
 static char* parse_arguments(const int& argc, char** const& argv) {
 	if (argc < 2) return nullptr;
+
 	arguments.inputPath = argv[1];
+
 #ifndef _DEBUG
 	if (!isCommandLine) return nullptr;
 #endif
-	bool isInputPathSet = true;
 
-	if (arguments.inputPath.size() && arguments.inputPath.front() == '-') {
+	bool isInputPathSet = true;
+	if (!arguments.inputPath.empty() && arguments.inputPath.front() == '-') {
 		arguments.inputPath.clear();
 		isInputPathSet = false;
 	}
 
-	std::string argument;
+	const uint32_t start = isInputPathSet ? 2u : 1u;
+	const uint32_t argcU = static_cast<uint32_t>(argc);
 
-	for (uint32_t i = isInputPathSet ? 2 : 1; i < argc; i++) {
-		argument = argv[i];
+	for (uint32_t i = start; i < argcU; ++i) {
+		std::string argument = argv[i];
+		bool parsed = false;
 
 		if (argument.size() >= 2 && argument.front() == '-') {
 			if (argument[1] == '-') {
-				argument = argument.c_str() + 2;
+				std::string name = argument.size() > 2 ? argument.substr(2) : std::string();
 
-				if (argument == "extension") {
-					if (i <= argc - 2) {
-						i++;
+				if (name == "extension") {
+					if (i + 1 < argcU) {
+						++i;
 						arguments.extensionFilter = argv[i];
-						continue;
+						parsed = true;
 					}
-				} else if (argument == "force_overwrite") {
+				} else if (name == "force_overwrite") {
 					arguments.forceOverwrite = true;
-					continue;
-				} else if (argument == "help") {
+					parsed = true;
+				} else if (name == "help") {
 					arguments.showHelp = true;
-					continue;
-				} else if (argument == "ignore_debug_info") {
+					parsed = true;
+				} else if (name == "ignore_debug_info") {
 					arguments.ignoreDebugInfo = true;
-					continue;
-				} else if (argument == "minimize_diffs") {
+					parsed = true;
+				} else if (name == "minimize_diffs") {
 					arguments.minimizeDiffs = true;
-					continue;
-				} else if (argument == "output") {
-					if (i <= argc - 2) {
-						i++;
+					parsed = true;
+				} else if (name == "output") {
+					if (i + 1 < argcU) {
+						++i;
 						arguments.outputPath = argv[i];
-						continue;
+						parsed = true;
 					}
-				} else if (argument == "silent_assertions") {
+				} else if (name == "silent_assertions") {
 					arguments.silentAssertions = true;
-					continue;
-				} else if (argument == "unrestricted_ascii") {
+					parsed = true;
+				} else if (name == "unrestricted_ascii") {
 					arguments.unrestrictedAscii = true;
-					continue;
+					parsed = true;
 				}
 			} else if (argument.size() == 2) {
 				switch (argument[1]) {
 				case 'e':
-					if (i > argc - 2) break;
-					i++;
-					arguments.extensionFilter = argv[i];
-					continue;
+					if (i + 1 < argcU) {
+						++i;
+						arguments.extensionFilter = argv[i];
+						parsed = true;
+					}
+					break;
 				case 'f':
 					arguments.forceOverwrite = true;
-					continue;
+					parsed = true;
+					break;
 				case '?':
 				case 'h':
 					arguments.showHelp = true;
-					continue;
+					parsed = true;
+					break;
 				case 'i':
 					arguments.ignoreDebugInfo = true;
-					continue;
+					parsed = true;
+					break;
 				case 'm':
 					arguments.minimizeDiffs = true;
-					continue;
+					parsed = true;
+					break;
 				case 'o':
-					if (i > argc - 2) break;
-					i++;
-					arguments.outputPath = argv[i];
-					continue;
+					if (i + 1 < argcU) {
+						++i;
+						arguments.outputPath = argv[i];
+						parsed = true;
+					}
+					break;
 				case 's':
 					arguments.silentAssertions = true;
-					continue;
+					parsed = true;
+					break;
 				case 'u':
 					arguments.unrestrictedAscii = true;
-					continue;
+					parsed = true;
+					break;
 				}
 			}
 		}
 
-		return argv[i];
+		if (!parsed) return argv[i];
 	}
 
 	return nullptr;
@@ -239,8 +253,9 @@ int main(int argc, char* argv[]) {
 
 	print(std::string(PROGRAM_NAME) + "\nCompiled on " + __DATE__);
 	
-	if (parse_arguments(argc, argv)) {
-		print("Invalid argument: " + std::string(parse_arguments(argc, argv)) + "\nUse -? to show usage and options.");
+	char* const invalidArgument = parse_arguments(argc, argv);
+	if (invalidArgument) {
+		print("Invalid argument: " + std::string(invalidArgument) + "\nUse -? to show usage and options.");
 		return EXIT_FAILURE;
 	}
 	
@@ -389,7 +404,11 @@ std::string input() {
 void print_progress_bar(const double& progress, const double& total) {
 	static char PROGRESS_BAR[] = "\r[====================]";
 
-	const uint8_t threshold = std::round(20 / total * progress);
+	double ratio = total > 0.0 ? progress / total : 1.0;
+	if (ratio < 0.0) ratio = 0.0;
+	if (ratio > 1.0) ratio = 1.0;
+
+	const uint8_t threshold = static_cast<uint8_t>(std::round(20.0 * ratio));
 
 	for (uint8_t i = 20; i--;) {
 		PROGRESS_BAR[i + 2] = i < threshold ? '=' : ' ';

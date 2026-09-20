@@ -31,9 +31,11 @@ private:
 	void read_constants(std::vector<Prototype*>& unlinkedPrototypes);
 	void read_number_constants();
 	void read_debug_info();
+
 	uint8_t get_next_byte();
+	uint8_t peek_next_byte();
 	uint32_t get_uleb128();
-	uint32_t get_uleb128_33();
+	uint64_t get_uleb128_33();
 	std::string get_string();
 	TableConstant get_table_constant();
 

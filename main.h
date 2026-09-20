@@ -1,11 +1,10 @@
 /*
 Requirements:
-  Visual Studio
-  C++20
-  Windows API
-  Default char is unsigned (/J)
+Visual Studio
+C++20
+Windows API
+Default char is unsigned (/J)
 */
-
 #ifndef _CHAR_UNSIGNED
 #error Default char is not unsigned!
 #endif
@@ -19,8 +18,9 @@ Requirements:
 #include <cstdint>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
-
+#include <algorithm>
 #include <windows.h>
 #include <conio.h>
 #include <fileapi.h>

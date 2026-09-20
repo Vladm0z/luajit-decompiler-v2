@@ -10,39 +10,47 @@ enum AST_EXPRESSION {
 };
 
 struct Ast::Expression {
-	Expression(const AST_EXPRESSION& type) {
-		set_type(type);
+	Expression(const AST_EXPRESSION& initialType) : type(initialType) {
+		initialize_type();
 	}
 
 	~Expression() {
 		delete_type();
 	}
 
-	void set_type(const AST_EXPRESSION& type) {
-		delete_type();
-		this->type = type;
+	void set_type(const AST_EXPRESSION& newType) {
+		if (type == newType) return;
 
+		delete_type();
+		type = newType;
+		initialize_type();
+	}
+
+	void initialize_type() {
 		switch (type) {
 		case AST_EXPRESSION_CONSTANT:
-			constant = new Constant;
+			constant = new Constant();
 			break;
 		case AST_EXPRESSION_VARARG:
 			returnCount = 0;
 			break;
+		case AST_EXPRESSION_FUNCTION:
+			function = nullptr;
+			break;
 		case AST_EXPRESSION_VARIABLE:
-			variable = new Variable;
+			variable = new Variable();
 			break;
 		case AST_EXPRESSION_FUNCTION_CALL:
-			functionCall = new FunctionCall;
+			functionCall = new FunctionCall();
 			break;
 		case AST_EXPRESSION_TABLE:
-			table = new Table;
+			table = new Table();
 			break;
 		case AST_EXPRESSION_BINARY_OPERATION:
-			binaryOperation = new BinaryOperation;
+			binaryOperation = new BinaryOperation();
 			break;
 		case AST_EXPRESSION_UNARY_OPERATION:
-			unaryOperation = new UnaryOperation;
+			unaryOperation = new UnaryOperation();
 			break;
 		}
 	}
@@ -75,6 +83,9 @@ struct Ast::Expression {
 		case AST_EXPRESSION_UNARY_OPERATION:
 			delete unaryOperation;
 			unaryOperation = nullptr;
+			break;
+		case AST_EXPRESSION_VARARG:
+			returnCount = 0;
 			break;
 		}
 	}

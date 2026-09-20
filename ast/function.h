@@ -149,6 +149,7 @@ struct Ast::Function {
 	std::vector<Statement*> block;
 	std::vector<Function*> childFunctions;
 	std::vector<const std::string*> usedGlobals;
+	std::unordered_set<std::string> usedNames;
 
 	struct SlotScopeCollector {
 		struct UpvalueInfo {

@@ -1862,8 +1862,9 @@ void Ast::eliminate_slots(Function& function, std::vector<Statement*>& block, Bl
 								if (block[index]->instruction.target == function.labels[targetLabel].target && index) index--;
 							}
 
-							ConditionBuilder conditionBuilder(ConditionBuilder::ASSIGNMENT, *this, targetLabel,
-								hasBoolConstruct ? block[i]->instruction.label : INVALID_ID, hasBoolConstruct ? block[i - 2]->instruction.label : INVALID_ID);
+							ConditionGraph conditionGraph(ConditionGraph::ASSIGNMENT, *this, targetLabel,
+								hasBoolConstruct ? block[i]->instruction.label : INVALID_ID, 
+								hasBoolConstruct ? block[i - 2]->instruction.label : INVALID_ID);
 							targetIndex = hasBoolConstruct ? (block[i - 3]->type == AST_STATEMENT_GOTO ? i - 4 : i - 2) : i;
 
 							for (uint32_t j = index; j < targetIndex; j++) {
@@ -1877,8 +1878,7 @@ void Ast::eliminate_slots(Function& function, std::vector<Statement*>& block, Bl
 												|| has_self_reference(block[i]->assignment.variables.back().slot, block[j]->assignment.expressions.back())
 											: block[j]->assignment.variables.size()))
 										break;
-									conditionBuilder.add_node(conditionBuilder.get_node_type(block[j]->instruction.type, block[j]->condition.swapped), block[j]->instruction.label,
-										function.get_label_from_id(block[j]->instruction.target), &block[j]->assignment.expressions);
+									conditionGraph.add_node(ConditionGraph::get_node_type(block[j]->instruction.type, block[j]->condition.swapped), block[j]->instruction.label, function.get_label_from_id(block[j]->instruction.target), &block[j]->assignment.expressions);
 									continue;
 								case AST_STATEMENT_ASSIGNMENT:
 									if (block[j]->assignment.variables.size() != 1
@@ -1899,8 +1899,7 @@ void Ast::eliminate_slots(Function& function, std::vector<Statement*>& block, Bl
 											|| block[j]->assignment.expressions.back()->variable->type != AST_VARIABLE_SLOT
 											|| *block[j]->assignment.expressions.back()->variable->slotScope != *block[i]->assignment.variables.back().slotScope)
 											break;
-										conditionBuilder.add_node(conditionBuilder.get_node_type(block[j]->instruction.type, block[j]->condition.swapped), block[j - 1]->instruction.label,
-											function.get_label_from_id(block[j]->instruction.target), &block[j - 1]->assignment.expressions);
+										conditionGraph.add_node(ConditionGraph::get_node_type(block[j]->instruction.type, block[j]->condition.swapped), block[j - 1]->instruction.label, function.get_label_from_id(block[j]->instruction.target), &block[j - 1]->assignment.expressions, false, false);
 										continue;
 									case AST_STATEMENT_GOTO:
 									case AST_STATEMENT_BREAK:
@@ -1914,14 +1913,12 @@ void Ast::eliminate_slots(Function& function, std::vector<Statement*>& block, Bl
 										switch (block[j - 1]->assignment.expressions.back()->constant->type) {
 										case AST_CONSTANT_NIL:
 										case AST_CONSTANT_FALSE:
-											conditionBuilder.add_node(ConditionBuilder::Node::FALSY_TEST, block[j - 1]->instruction.label,
-												function.get_label_from_id(block[j]->instruction.target), &block[j - 1]->assignment.expressions);
+											conditionGraph.add_node(ConditionGraph::Node::FALSY_TEST, block[j - 1]->instruction.label, function.get_label_from_id(block[j]->instruction.target), &block[j - 1]->assignment.expressions, false, false);
 											break;
 										case AST_CONSTANT_TRUE:
 										case AST_CONSTANT_STRING:
 										case AST_CONSTANT_NUMBER:
-											conditionBuilder.add_node(ConditionBuilder::Node::TRUTHY_TEST, block[j - 1]->instruction.label,
-												function.get_label_from_id(block[j]->instruction.target), &block[j - 1]->assignment.expressions);
+											conditionGraph.add_node(ConditionGraph::Node::TRUTHY_TEST, block[j - 1]->instruction.label, function.get_label_from_id(block[j]->instruction.target), &block[j - 1]->assignment.expressions, false, false);
 											break;
 										}
 
@@ -1936,13 +1933,13 @@ void Ast::eliminate_slots(Function& function, std::vector<Statement*>& block, Bl
 							}
 
 							if (!hasBoolConstruct) {
-								conditionBuilder.add_node(ConditionBuilder::Node::TRUTHY_TEST, block[i]->instruction.label, targetLabel, &block[i]->assignment.expressions);
+								conditionGraph.add_node(ConditionGraph::Node::TRUTHY_TEST, block[i]->instruction.label, targetLabel, &block[i]->assignment.expressions);
 							} else if (block[i - 3]->type == AST_STATEMENT_GOTO) {
-								conditionBuilder.add_node(ConditionBuilder::Node::TRUTHY_TEST, block[i - 4]->instruction.label, targetLabel, &block[i - 4]->assignment.expressions);
+								conditionGraph.add_node(ConditionGraph::Node::TRUTHY_TEST, block[i - 4]->instruction.label, targetLabel, &block[i - 4]->assignment.expressions);
 							}
 
 							if (index != INVALID_ID) {
-								expression = conditionBuilder.build_condition();
+								expression = conditionGraph.build_condition();
 								if (!expression) break;
 								block[i]->assignment.expressions.back() = expression;
 
@@ -2291,13 +2288,13 @@ void Ast::eliminate_conditions(Function& function, std::vector<Statement*>& bloc
 		if (previousValidIndex == INVALID_ID) continue;
 		index = previousValidIndex;
 
-		ConditionBuilder conditionBuilder(ConditionBuilder::ASSIGNMENT, *this, targetLabel,
+		ConditionGraph conditionGraph(ConditionGraph::ASSIGNMENT, *this, targetLabel,
 			hasBoolConstruct ? block[i]->instruction.label : INVALID_ID, hasBoolConstruct ? block[i - 2]->instruction.label : INVALID_ID);
 
 		for (uint32_t j = index; j < targetIndex; j++) {
 			switch (block[j]->type) {
 			case AST_STATEMENT_CONDITION:
-				conditionBuilder.add_node(conditionBuilder.get_node_type(block[j]->instruction.type, block[j]->condition.swapped), block[j]->instruction.label,
+				conditionGraph.add_node(ConditionGraph::get_node_type(block[j]->instruction.type, block[j]->condition.swapped), block[j]->instruction.label,
 					hasEndAssignment
 					|| block[j]->assignment.variables.size()
 					|| (block[j]->instruction.target == function.labels[targetLabel].target
@@ -2320,13 +2317,13 @@ void Ast::eliminate_conditions(Function& function, std::vector<Statement*>& bloc
 				switch (block[j]->assignment.expressions.back()->constant->type) {
 				case AST_CONSTANT_NIL:
 				case AST_CONSTANT_FALSE:
-					conditionBuilder.add_node(ConditionBuilder::Node::FALSY_TEST, block[j]->instruction.label,
+					conditionGraph.add_node(ConditionGraph::Node::FALSY_TEST, block[j]->instruction.label,
 						function.get_label_from_id(block[j + 1]->instruction.target), &block[j]->assignment.expressions);
 					break;
 				case AST_CONSTANT_TRUE:
 				case AST_CONSTANT_STRING:
 				case AST_CONSTANT_NUMBER:
-					conditionBuilder.add_node(ConditionBuilder::Node::TRUTHY_TEST, block[j]->instruction.label,
+					conditionGraph.add_node(ConditionGraph::Node::TRUTHY_TEST, block[j]->instruction.label,
 						function.get_label_from_id(block[j + 1]->instruction.target), &block[j]->assignment.expressions);
 					break;
 				}
@@ -2338,17 +2335,17 @@ void Ast::eliminate_conditions(Function& function, std::vector<Statement*>& bloc
 
 		if (hasEndAssignment) {
 			if (!hasBoolConstruct) {
-				conditionBuilder.add_node(ConditionBuilder::Node::TRUTHY_TEST, block[i]->instruction.label, targetLabel, &block[i]->assignment.expressions);
+				conditionGraph.add_node(ConditionGraph::Node::TRUTHY_TEST, block[i]->instruction.label, targetLabel, &block[i]->assignment.expressions);
 			} else if (block[i - 3]->type == AST_STATEMENT_GOTO) {
-				conditionBuilder.add_node(ConditionBuilder::Node::TRUTHY_TEST, block[i - 4]->instruction.label, targetLabel, &block[i - 4]->assignment.expressions);
+				conditionGraph.add_node(ConditionGraph::Node::TRUTHY_TEST, block[i - 4]->instruction.label, targetLabel, &block[i - 4]->assignment.expressions);
 			}
 		} else {
 			expressions.back() = new_slot(block[assignmentIndex]->assignment.variables.back().slot);
 			expressions.back()->variable->slotScope = block[assignmentIndex]->assignment.variables.back().slotScope;
-			conditionBuilder.add_node(ConditionBuilder::Node::TRUTHY_TEST, function.labels.size(), targetLabel, &expressions);
+			conditionGraph.add_node(ConditionGraph::Node::TRUTHY_TEST, function.labels.size(), targetLabel, &expressions);
 		}
 		
-		expressions.back() = conditionBuilder.build_condition();
+		expressions.back() = conditionGraph.build_condition();
 		if (!expressions.back()) continue;
 		block[assignmentIndex]->assignment.expressions.back() = expressions.back();
 
@@ -2442,7 +2439,7 @@ void Ast::eliminate_conditions(Function& function, std::vector<Statement*>& bloc
 			}
 
 			{
-				ConditionBuilder conditionBuilder(ConditionBuilder::STATEMENT, *this, INVALID_ID, targetLabel, extendedTargetLabel);
+				ConditionGraph conditionGraph(ConditionGraph::STATEMENT, *this, INVALID_ID, targetLabel, extendedTargetLabel);
 
 				for (uint32_t j = index; j <= i; j++) {
 					try {
@@ -2451,11 +2448,11 @@ void Ast::eliminate_conditions(Function& function, std::vector<Statement*>& bloc
 					catch (...) {
 						print("\n" + bytecode.filePath + ":\nFailed to eliminate all test and copy conditions\n");
 					}
-					conditionBuilder.add_node(conditionBuilder.get_node_type(block[j]->instruction.type, block[j]->condition.swapped),
+					conditionGraph.add_node(ConditionGraph::get_node_type(block[j]->instruction.type, block[j]->condition.swapped),
 						block[j]->instruction.label, function.get_label_from_id(block[j]->instruction.target), &block[j]->assignment.expressions);
 				}
 
-				expressions.back() = conditionBuilder.build_condition();
+				expressions.back() = conditionGraph.build_condition();
 				assert(expressions.back(), "Failed to build condition", bytecode.filePath, DEBUG_INFO);
 				block[i]->assignment.expressions = expressions;
 
@@ -2944,10 +2941,14 @@ void Ast::build_if_statements(Function& function, std::vector<Statement*>& block
 }
 
 void Ast::clean_up(Function& function) {
+	function.usedNames.clear();
 	if (function.hasDebugInfo) {
 		for (uint32_t i = function.parameterNames.size(); i--;) {
 			(*function.slotScopeCollector.slotInfos[i].activeSlotScope)->name = function.parameterNames[i];
 		}
+		for (const Local& local : function.locals)
+			for (const std::string& name : local.names)
+				function.usedNames.insert(name);
 	} else {
 		function.parameterNames.resize(function.prototype.header.parameters);
 
@@ -2955,6 +2956,16 @@ void Ast::clean_up(Function& function) {
 			function.parameterNames[i] = "arg_" + std::to_string(minimizeDiffs ? function.level : function.id) + "_" + std::to_string(i);
 			(*function.slotScopeCollector.slotInfos[i].activeSlotScope)->name = function.parameterNames[i];
 		}
+	}
+
+	for (const std::string& name : function.parameterNames) function.usedNames.insert(name);
+	for (const Function::Upvalue& upvalue : function.upvalues) {
+		if (upvalue.slotScope && (*upvalue.slotScope)->name.size()) function.usedNames.insert((*upvalue.slotScope)->name);
+	}
+	if (!function.hasDebugInfo && function.prototype.header.parameters && slot_used_as_table(function.block, 0)) {
+		function.parameterNames[0] = "self";
+		(*function.slotScopeCollector.slotInfos[0].activeSlotScope)->name = "self";
+		function.usedNames.insert("self");
 	}
 
 	uint32_t variableCounter = 0, iteratorCounter = 0;
@@ -2965,6 +2976,146 @@ void Ast::clean_up(Function& function) {
 		function.labels[i].name = "label_" + std::to_string(minimizeDiffs ? function.level : function.id) + "_" + std::to_string(labelCounter);
 		labelCounter++;
 	}
+}
+
+std::string Ast::sanitize_identifier(const std::string& name) {
+	static const std::string KEYWORDS[] = {
+		"and", "break", "do", "else", "elseif", "end", "false",
+		"for", "function", "if", "in", "local", "nil", "not",
+		"or", "repeat", "return", "then", "true", "until", "while"
+	};
+	std::string result;
+	for (const char& c : name) {
+		if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') result += c;
+		else result += '_';
+	}
+	if (!result.size() || (result[0] >= '0' && result[0] <= '9')) return "";
+	for (const std::string& keyword : KEYWORDS) {
+		if (result == keyword) return "";
+	}
+	return result;
+}
+
+std::string Ast::infer_variable_name(Function& function, const Expression* expression, const std::string& fallback) {
+	std::string name;
+	if (expression) {
+		switch (expression->type) {
+		case AST_EXPRESSION_VARIABLE:
+			switch (expression->variable->type) {
+			case AST_VARIABLE_GLOBAL: // local print = print
+				name = expression->variable->name;
+				break;
+			case AST_VARIABLE_TABLE_INDEX: // local t = Managers.time
+				if (expression->variable->tableIndex->type == AST_EXPRESSION_CONSTANT && expression->variable->tableIndex->constant->isName)
+					name = expression->variable->tableIndex->constant->string;
+				break;
+			}
+			break;
+		case AST_EXPRESSION_FUNCTION_CALL: {
+			const FunctionCall& call = *expression->functionCall;
+			if (call.function->type == AST_EXPRESSION_VARIABLE && call.function->variable->type == AST_VARIABLE_GLOBAL) {
+				if (call.function->variable->name == "require" && call.arguments.size() == 1
+					&& call.arguments[0]->type == AST_EXPRESSION_CONSTANT && call.arguments[0]->constant->type == AST_CONSTANT_STRING) {
+					const std::string& module = call.arguments[0]->constant->string;
+					const size_t separator = module.find_last_of(".");
+					name = sanitize_identifier(separator == std::string::npos ? module : module.substr(separator + 1));
+				}
+				// naming a local after a called function (tostring, pcall...) would shadow it: skip
+			} else if (call.function->type == AST_EXPRESSION_VARIABLE && call.function->variable->type == AST_VARIABLE_TABLE_INDEX
+				&& call.function->variable->tableIndex->type == AST_EXPRESSION_CONSTANT && call.function->variable->tableIndex->constant->isName) {
+				const std::string& method = call.function->variable->tableIndex->constant->string;
+				if (method != "new" && method != "create" && method != "instance" && method != "init") name = method;
+			}
+			break;
+		}
+		case AST_EXPRESSION_TABLE: name = "tbl"; break;
+		case AST_EXPRESSION_FUNCTION: name = "fn"; break;
+		case AST_EXPRESSION_VARARG: name = "args"; break;
+		case AST_EXPRESSION_CONSTANT:
+			switch (expression->constant->type) {
+			case AST_CONSTANT_STRING: name = "str"; break;
+			case AST_CONSTANT_NUMBER: name = "num"; break;
+			case AST_CONSTANT_FALSE:
+			case AST_CONSTANT_TRUE: name = "flag"; break;
+			}
+			break;
+		case AST_EXPRESSION_UNARY_OPERATION:
+			switch (expression->unaryOperation->type) {
+			case AST_UNARY_LENGTH: name = "count"; break;
+			case AST_UNARY_NOT: name = "flag"; break;
+			case AST_UNARY_MINUS: name = "num"; break;
+			}
+			break;
+		case AST_EXPRESSION_BINARY_OPERATION:
+			switch (expression->binaryOperation->type) {
+			case AST_BINARY_CONCATENATION: name = "str"; break;
+			case AST_BINARY_LESS_THAN:
+			case AST_BINARY_LESS_EQUAL:
+			case AST_BINARY_GREATER_THEN:
+			case AST_BINARY_GREATER_EQUAL:
+			case AST_BINARY_EQUAL:
+			case AST_BINARY_NOT_EQUAL:
+			case AST_BINARY_AND:
+			case AST_BINARY_OR: name = "flag"; break;
+			default: name = "num"; break;
+			}
+			break;
+		}
+	}
+	name = sanitize_identifier(name);
+	if (!name.size()) return fallback;
+	std::string unique = name;
+	for (uint32_t suffix = 2; function.usedNames.count(unique); suffix++) unique = name + "_" + std::to_string(suffix);
+	return unique;
+}
+
+bool Ast::slot_used_as_table(const std::vector<Statement*>& block, const uint8_t& slot) {
+	for (const Statement* statement : block) {
+		if (slot_used_as_table(statement->block, slot)) return true;
+		for (const Variable& variable : statement->assignment.variables) {
+			if (variable.type == AST_VARIABLE_TABLE_INDEX && variable.table->type == AST_EXPRESSION_VARIABLE
+				&& variable.table->variable->type == AST_VARIABLE_SLOT && variable.table->variable->slot == slot) return true;
+		}
+		std::vector<const Expression*> stack(statement->assignment.expressions.begin(), statement->assignment.expressions.end());
+		if (statement->assignment.multresReturn) stack.emplace_back(statement->assignment.multresReturn);
+		while (stack.size()) {
+			const Expression* expression = stack.back();
+			stack.pop_back();
+			if (!expression) continue;
+			switch (expression->type) {
+			case AST_EXPRESSION_VARIABLE:
+				if (expression->variable->type != AST_VARIABLE_TABLE_INDEX) break;
+				if (expression->variable->table->type == AST_EXPRESSION_VARIABLE
+					&& expression->variable->table->variable->type == AST_VARIABLE_SLOT
+					&& expression->variable->table->variable->slot == slot) return true;
+				stack.emplace_back(expression->variable->table);
+				stack.emplace_back(expression->variable->tableIndex);
+				break;
+			case AST_EXPRESSION_FUNCTION_CALL:
+				if (expression->functionCall->isMethod && expression->functionCall->function->type == AST_EXPRESSION_VARIABLE
+					&& expression->functionCall->function->variable->type == AST_VARIABLE_SLOT
+					&& expression->functionCall->function->variable->slot == slot) return true;
+				stack.emplace_back(expression->functionCall->function);
+				for (const Expression* argument : expression->functionCall->arguments) stack.emplace_back(argument);
+				if (expression->functionCall->multresArgument) stack.emplace_back(expression->functionCall->multresArgument);
+				break;
+			case AST_EXPRESSION_BINARY_OPERATION:
+				stack.emplace_back(expression->binaryOperation->leftOperand);
+				stack.emplace_back(expression->binaryOperation->rightOperand);
+				break;
+			case AST_EXPRESSION_UNARY_OPERATION:
+				stack.emplace_back(expression->unaryOperation->operand);
+				break;
+			case AST_EXPRESSION_TABLE:
+				for (const Table::Field& field : expression->table->fields) {
+					stack.emplace_back(field.key);
+					stack.emplace_back(field.value);
+				}
+				break;
+			}
+		}
+	}
+	return false;
 }
 
 void Ast::clean_up_block(Function& function, std::vector<Statement*>& block, uint32_t& variableCounter, uint32_t& iteratorCounter, BlockInfo* const& previousBlock) {
@@ -2992,11 +3143,32 @@ void Ast::clean_up_block(Function& function, std::vector<Statement*>& block, uin
 			if (function.hasDebugInfo) {
 				for (uint8_t j = block[i]->assignment.variables.size(); j--;) {
 					(*block[i]->assignment.variables[j].slotScope)->name = block[i]->locals->names[j];
+					function.usedNames.insert(block[i]->locals->names[j]);   // <-- ADD THIS LINE
 				}
 			} else {
 				for (uint8_t j = 0; j < block[i]->assignment.variables.size(); j++) {
-					(*block[i]->assignment.variables[j].slotScope)->name = "iter_" + std::to_string(minimizeDiffs ? function.level : function.id) + "_" + std::to_string(iteratorCounter);
+					std::string name;
+					if (block[i]->type == AST_STATEMENT_NUMERIC_FOR) {
+						static const std::string NUMERIC[] = { "i", "j", "k", "l" };
+						name = iteratorCounter < 4 ? NUMERIC[iteratorCounter] : "i" + std::to_string(iteratorCounter);
+					} else {
+						const Expression* iterator = block[i]->assignment.expressions.size() ? block[i]->assignment.expressions[0] : nullptr;
+						const bool isIpairs = iterator && iterator->type == AST_EXPRESSION_FUNCTION_CALL
+							&& iterator->functionCall->function->type == AST_EXPRESSION_VARIABLE
+							&& iterator->functionCall->function->variable->type == AST_VARIABLE_GLOBAL
+							&& iterator->functionCall->function->variable->name == "ipairs";
+						const bool isPairs = iterator && iterator->type == AST_EXPRESSION_FUNCTION_CALL
+							&& iterator->functionCall->function->type == AST_EXPRESSION_VARIABLE
+							&& iterator->functionCall->function->variable->type == AST_VARIABLE_GLOBAL
+							&& (iterator->functionCall->function->variable->name == "pairs" || iterator->functionCall->function->variable->name == "next");
+						if (isIpairs || isPairs) name = j == 0 ? (isIpairs ? "i" : "k") : "v";
+						else name = "iter_" + std::to_string(minimizeDiffs ? function.level : function.id) + "_" + std::to_string(iteratorCounter);
+					}
 					iteratorCounter++;
+					std::string unique = name;
+					for (uint32_t suffix = 2; function.usedNames.count(unique); suffix++) unique = name + "_" + std::to_string(suffix);
+					function.usedNames.insert(unique);
+					(*block[i]->assignment.variables[j].slotScope)->name = unique;
 				}
 			}
 
@@ -3143,11 +3315,10 @@ void Ast::clean_up_block(Function& function, std::vector<Statement*>& block, uin
 				&& block[i]->assignment.expressions.back()->constant->type == AST_CONSTANT_NIL) {
 				block[i]->assignment.expressions.pop_back();
 			}
-
 			for (uint8_t j = block[i]->assignment.variables.size(); j--;) {
 				(*block[i]->assignment.variables[j].slotScope)->name = block[i]->locals->names[j];
+				function.usedNames.insert(block[i]->locals->names[j]);   // <-- ADD THIS LINE
 			}
-
 			clean_up_block(function, block[i]->block, variableCounter, iteratorCounter, nullptr);
 			continue;
 		case AST_STATEMENT_ASSIGNMENT:
@@ -3176,8 +3347,12 @@ void Ast::clean_up_block(Function& function, std::vector<Statement*>& block, uin
 				}
 
 				declarations.emplace_back(&block[i]->assignment.variables[j]);
-				(*block[i]->assignment.variables[j].slotScope)->name = "var_" + std::to_string(minimizeDiffs ? function.level : function.id) + "_" + std::to_string(variableCounter);
+				const Expression* source = j < block[i]->assignment.expressions.size() ? block[i]->assignment.expressions[j] : nullptr;
+				const std::string name = infer_variable_name(function, source,
+				"var_" + std::to_string(minimizeDiffs ? function.level : function.id) + "_" + std::to_string(variableCounter));
 				variableCounter++;
+				(*block[i]->assignment.variables[j].slotScope)->name = name;
+				function.usedNames.insert(name);
 			}
 
 			if (declarations.size()) {
