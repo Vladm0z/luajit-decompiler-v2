@@ -1,6 +1,5 @@
 class Ast {
 private:
-
 	static constexpr uint32_t INVALID_ID = -1;
 
 	enum CONSTANT_TYPE {
@@ -10,12 +9,10 @@ private:
 		NUMBER_CONSTANT
 	};
 
+public:
 	struct Local;
 	struct SlotScope;
-	struct ConditionBuilder;
 	struct ConditionGraph; 
-
-public:
 	struct Expression;
 	struct Constant;
 	struct Variable;
@@ -27,6 +24,7 @@ public:
 	struct Function;
 	#include "building_blocks.h"
 	#include "function.h"
+	#include "conditionGraph.h"
 
 	Ast(const Bytecode& bytecode, const bool& ignoreDebugInfo, const bool& minimizeDiffs);
 	~Ast();
@@ -36,9 +34,6 @@ public:
 	Function* chunk = nullptr;
 
 private:
-
-	#include "conditionGraph.h"
-
 	struct BlockInfo {
 		uint32_t index = INVALID_ID;
 		std::vector<Statement*>& block;

@@ -1,4 +1,4 @@
-struct Ast::ConditionGraph {
+struct ConditionGraph {
 	enum TYPE {
 		ASSIGNMENT,
 		STATEMENT
@@ -38,6 +38,7 @@ struct Ast::ConditionGraph {
 		} type;
 		Node(const TYPE& type) : type(type) {}
 		uint32_t nodeLabel = INVALID_ID;
+		Node* takenSucc = nullptr;   // successor reached when the bytecode jump is taken
 		Node* trueSucc = nullptr;
 		Node* falseSucc = nullptr;
 		struct PredEdge {
@@ -46,10 +47,11 @@ struct Ast::ConditionGraph {
 		};
 		std::vector<PredEdge> preds;
 		bool inverted = false;
+		bool fallsThrough = true;
+		uint8_t twists = 0;
 		std::vector<Expression*>* expressions = nullptr;
 		Node* leftNode = nullptr;
 		Node* rightNode = nullptr;
-		uint8_t twists = 0; 
 		Expression* resultExpression = nullptr;
 		int topoIndex = -1;
 		bool removed = false;
@@ -59,7 +61,6 @@ struct Ast::ConditionGraph {
 		bool isAtom() const {
 			return type < AND;
 		}
-		bool fallsThrough = true;
 	};
 
 	ConditionGraph(const TYPE& type, Ast& ast, const uint32_t& endTargetLabel, const uint32_t& trueTargetLabel, const uint32_t& falseTargetLabel)
@@ -132,25 +133,42 @@ struct Ast::ConditionGraph {
 			conditionNodes.emplace_back(falseTarget);
 			break;
 		}
-
 		std::unordered_map<uint32_t, Node*> labelToNode;
 		for (auto node : conditionNodes) {
-			if (node->nodeLabel != INVALID_ID) {
-				labelToNode[node->nodeLabel] = node;
-			}
+			if (node->nodeLabel != INVALID_ID) labelToNode[node->nodeLabel] = node;
 		}
-
-		for (auto node : conditionNodes) {
+		// 1. resolve taken (jump) successors without writing edges yet
+		for (uint32_t i = 0; i < addedCount; i++) {
+			Node* node = conditionNodes[i];
 			auto it = targetLabels.find(node);
 			if (it == targetLabels.end() || it->second == INVALID_ID) continue;
 			auto labelIt = labelToNode.find(it->second);
 			if (labelIt == labelToNode.end()) return false;
-			link_edge(node, labelIt->second, get_edge_color(node));
+			node->takenSucc = labelIt->second;
 		}
-
+		// 2. orient polarity relative to exits (port of ConditionBuilder::fix_return_nodes)
+		for (uint32_t i = 0; i < addedCount; i++) {
+			Node* node = conditionNodes[i];
+			if (!node->takenSucc) continue;
+			if (node->takenSucc == endTarget
+				&& (node->type == Node::TRUTHY_TEST || node->type == Node::FALSY_TEST)) {
+				node->inverted = node->type == Node::FALSY_TEST;
+				node->takenSucc = node->type == Node::TRUTHY_TEST ? trueTarget : falseTarget;
+			} else if (node->takenSucc == falseTarget) {
+				node->inverted = true;
+			} else if (node->takenSucc == trueTarget) {
+				node->inverted = false;
+			}
+		}
+		// 3. write taken edges with the uniform colour rule
+		for (uint32_t i = 0; i < addedCount; i++) {
+			Node* node = conditionNodes[i];
+			if (node->takenSucc) link_edge(node, node->takenSucc, get_edge_color(node));
+		}
+		// 4. assignment mode: truthiness tests feeding boolean exits yield booleans
 		if (type == ASSIGNMENT) {
-			for (auto node : conditionNodes) {
-				if (node->isExit()) continue;
+			for (uint32_t i = 0; i < addedCount; i++) {
+				Node* node = conditionNodes[i];
 				const bool hitsBoolTarget =
 					(node->trueSucc && (node->trueSucc->type == Node::TRUE_TARGET || node->trueSucc->type == Node::FALSE_TARGET))
 					|| (node->falseSucc && (node->falseSucc->type == Node::TRUE_TARGET || node->falseSucc->type == Node::FALSE_TARGET));
@@ -159,35 +177,22 @@ struct Ast::ConditionGraph {
 				else if (node->type == Node::FALSY_TEST) node->type = Node::BOOL_FALSY_TEST;
 			}
 		}
-
+		// 5. fall-through (not-taken) edges in program order
 		for (uint32_t i = 0; i < addedCount; i++) {
 			Node* const from = conditionNodes[i];
 			if (!from->fallsThrough) continue;
 			Node* const fall = i + 1 < addedCount ? conditionNodes[i + 1] : (type == STATEMENT ? trueTarget : endTarget);
-			if (!fall) continue;
-			const EdgeColor fallColor = get_edge_color(from) == EdgeColor::True ? EdgeColor::False : EdgeColor::True;
-			if (fallColor == EdgeColor::True ? from->trueSucc == nullptr : from->falseSucc == nullptr)
-				link_edge(from, fall, fallColor);
+			if (!fall || fall == from->takenSucc) continue;
+			link_edge(from, fall, get_edge_color(from) == EdgeColor::True ? EdgeColor::False : EdgeColor::True);
 		}
-
 		conditionNodes.pop_back();
 		if (type == ASSIGNMENT) conditionNodes.pop_back();
 		return true;
 	}
 
+	// uniform rule: taken jump == expression true (orientation already applied)
 	EdgeColor get_edge_color(Node* node) {
-		switch (node->type) {
-		case Node::TRUTHY_TEST:
-		case Node::BOOL_TRUTHY_TEST:
-		case Node::UNCONDITIONAL_TRUE:
-			return EdgeColor::True;
-		case Node::FALSY_TEST:
-		case Node::BOOL_FALSY_TEST:
-		case Node::UNCONDITIONAL_FALSE:
-			return EdgeColor::False;
-		default:
-			return node->inverted ? EdgeColor::False : EdgeColor::True;
-		}
+		return node->inverted ? EdgeColor::False : EdgeColor::True;
 	}
 
 	void link_edge(Node* from, Node* to, EdgeColor color) {
@@ -288,7 +293,7 @@ struct Ast::ConditionGraph {
 			if (predEdge.from->removed) continue;
 			if (predEdge.color == targetColor) continue;
 			Node* pred = predEdge.from;
-			if (!pred->isAtom() || pred->twists) return false;
+			if (!pred->isAtom() || pred->twists) return false;   // untwistable DAG: reject, do not oscillate
 			twist_node(pred);
 		}
 		return true;
@@ -361,25 +366,20 @@ struct Ast::ConditionGraph {
 			if (c1->isExit() || c2->isExit() || c1->removed || c2->removed) continue;
 			if (!c1->trueSucc || !c1->falseSucc || !c2->trueSucc || !c2->falseSucc) continue;
 			if (c1->trueSucc != c2->trueSucc || c1->falseSucc != c2->falseSucc) continue;
-
 			Node* combined = new_node(Node::OR);
 			combined->nodeLabel = c0->nodeLabel;
 			combined->trueSucc = c1->trueSucc;
 			combined->falseSucc = c1->falseSucc;
-
 			Node* leftAnd = new_node(Node::AND);
 			leftAnd->leftNode = copy_node_shallow(c0);
 			leftAnd->rightNode = copy_node_shallow(c1);
-
 			Node* rightAnd = new_node(Node::AND);
 			Node* notC0 = copy_node_shallow(c0);
 			notC0->inverted = !notC0->inverted;
 			rightAnd->leftNode = notC0;
 			rightAnd->rightNode = copy_node_shallow(c2);
-
 			combined->leftNode = leftAnd;
 			combined->rightNode = rightAnd;
-
 			combined->preds = c0->preds;
 			for (auto& pe : combined->preds) {
 				if (pe.from->trueSucc == c0) pe.from->trueSucc = combined;
@@ -397,7 +397,6 @@ struct Ast::ConditionGraph {
 				}
 				deduplicate_preds(combined->falseSucc);
 			}
-
 			c0->removed = true;
 			c1->removed = true;
 			c2->removed = true;
@@ -417,7 +416,6 @@ struct Ast::ConditionGraph {
 			Node* NR = root->falseSucc;
 			const int ng = count_incoming_edges(NG, EdgeColor::True);
 			const int nr = count_incoming_edges(NR, EdgeColor::False);
-
 			if (ng > 1 && nr <= 1) {
 				Node* NZ = follow_edges(root, EdgeColor::False, ng);
 				if (!NZ) continue;
@@ -494,54 +492,54 @@ struct Ast::ConditionGraph {
 		return build_expression_recursive(chain, 0, (uint32_t)chain.size() - 1, isAnd);
 	}
 
-		 Expression* build_expression_recursive(const std::vector<Node*>& chain, uint32_t start, uint32_t end, bool isAnd) {
+	// operators come from the actual edges, never from a passed flag
+	Expression* build_expression_recursive(const std::vector<Node*>& chain, uint32_t start, uint32_t end, bool isAnd) {
 		if (start > end) return nullptr;
 		if (start == end) return build_expression(chain[start]);
-		if (end - start == 1) {
-			return build_binary(isAnd ? Node::AND : Node::OR, build_expression(chain[start]), build_expression(chain[end]));
-		}
-		
 		Node* first = chain[start];
 		Node* second = chain[start + 1];
-		
+		const Node::TYPE sequential = first->falseSucc == second ? Node::OR
+			: first->trueSucc == second ? Node::AND
+			: (isAnd ? Node::AND : Node::OR);
+		if (end - start == 1) {
+			return build_binary(sequential, build_expression(chain[start]), build_expression(chain[end]));
+		}
 		bool greenSkips = first->trueSucc && !first->trueSucc->isExit() && first->trueSucc->topoIndex > second->topoIndex;
 		bool redSkips = first->falseSucc && !first->falseSucc->isExit() && first->falseSucc->topoIndex > second->topoIndex;
-		
 		if (greenSkips && !redSkips) {
 			uint32_t splitPoint = end;
+			bool found = false;
 			for (uint32_t i = start + 1; i <= end; i++) {
 				if (chain[i] == first->trueSucc || chain[i]->topoIndex >= first->trueSucc->topoIndex) {
 					splitPoint = i;
+					found = true;
 					break;
 				}
 			}
-			// Only split if we found the target strictly before the end of the chain
-			if (splitPoint < end) {
-				Expression* left = build_expression_recursive(chain, start, splitPoint, false);
-				Expression* right = build_expression_recursive(chain, splitPoint + 1, end, isAnd);
-				return build_binary(Node::AND, left, right);
+			if (found && splitPoint > start) {
+				return build_binary(Node::AND,
+					build_expression_recursive(chain, start, splitPoint - 1, false),
+					build_expression_recursive(chain, splitPoint, end, isAnd));
 			}
 		}
-		
 		if (redSkips && !greenSkips) {
 			uint32_t splitPoint = end;
+			bool found = false;
 			for (uint32_t i = start + 1; i <= end; i++) {
 				if (chain[i] == first->falseSucc || chain[i]->topoIndex >= first->falseSucc->topoIndex) {
 					splitPoint = i;
+					found = true;
 					break;
 				}
 			}
-			// Only split if we found the target strictly before the end of the chain
-			if (splitPoint < end) {
-				Expression* left = build_expression_recursive(chain, start, splitPoint, true);
-				Expression* right = build_expression_recursive(chain, splitPoint + 1, end, isAnd);
-				return build_binary(Node::OR, left, right);
+			if (found && splitPoint > start) {
+				return build_binary(Node::OR,
+					build_expression_recursive(chain, start, splitPoint - 1, true),
+					build_expression_recursive(chain, splitPoint, end, isAnd));
 			}
 		}
-		
-		// Fallback: Default sequential combination (guarantees forward progress)
-		return build_binary(isAnd ? Node::AND : Node::OR, build_expression(chain[start]), build_expression_recursive(chain, start + 1, end, isAnd));
-	 }
+		return build_binary(sequential, build_expression(chain[start]), build_expression_recursive(chain, start + 1, end, isAnd));
+	}
 
 	Node* create_combined_node(Node* root, Node* anchor, Expression* expr, Node::TYPE opType) {
 		Node* combined = new_node(opType);
@@ -690,6 +688,7 @@ struct Ast::ConditionGraph {
 	}
 
 	Expression* build_binary(const Node::TYPE& type, Expression* const& leftOperand, Expression* const& rightOperand) {
+		assert(leftOperand && rightOperand, "Condition graph produced a null operand", ast.bytecode.filePath, DEBUG_INFO);
 		Expression* const expression = ast.new_expression(AST_EXPRESSION_BINARY_OPERATION);
 		switch (type) {
 		case Node::LESS_THAN:
@@ -737,12 +736,10 @@ struct Ast::ConditionGraph {
 		if (!reduce_patterns()) return nullptr;
 		if (conditionNodes.empty()) return nullptr;
 		Node* node = conditionNodes.back();
-		if (type == STATEMENT && node->trueSucc == falseTarget) {
-			if (node->resultExpression) {
-				node->resultExpression = build_not(node->resultExpression);   // <-- ADDED
-			} else {
-				node->inverted = !node->inverted;
-			}
+		// safety net: orient the final expression toward the then-branch / true value
+		if (node->trueSucc == falseTarget) {
+			if (node->resultExpression) node->resultExpression = build_not(node->resultExpression);
+			else node->inverted = !node->inverted;
 			std::swap(node->trueSucc, node->falseSucc);
 		}
 		return build_expression(node);

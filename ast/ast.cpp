@@ -2304,7 +2304,7 @@ void Ast::eliminate_conditions(Function& function, std::vector<Statement*>& bloc
 							&& block[j]->assignment.expressions.back()->variable->type == AST_VARIABLE_SLOT
 							&& block[j]->assignment.expressions.back()->variable->slot == block[assignmentIndex]->assignment.variables.back().slot)
 						: block[j]->instruction.target != function.labels[extendedTargetLabel].target)
-					? function.get_label_from_id(block[j]->instruction.target) : function.labels.size(), &block[j]->assignment.expressions,
+					? function.get_label_from_id(block[j]->instruction.target) : INVALID_ID, &block[j]->assignment.expressions,
 					block[j]->instruction.target == function.labels[targetLabel].target
 					&& !hasEndAssignment
 					&& block[j]->assignment.expressions.size() == 1
@@ -2318,7 +2318,7 @@ void Ast::eliminate_conditions(Function& function, std::vector<Statement*>& bloc
 				case AST_CONSTANT_NIL:
 				case AST_CONSTANT_FALSE:
 					conditionGraph.add_node(ConditionGraph::Node::FALSY_TEST, block[j]->instruction.label,
-						function.get_label_from_id(block[j + 1]->instruction.target), &block[j]->assignment.expressions);
+						function.get_label_from_id(block[j + 1]->instruction.target), &block[j]->assignment.expressions, false, false);
 					break;
 				case AST_CONSTANT_TRUE:
 				case AST_CONSTANT_STRING:
@@ -2342,7 +2342,7 @@ void Ast::eliminate_conditions(Function& function, std::vector<Statement*>& bloc
 		} else {
 			expressions.back() = new_slot(block[assignmentIndex]->assignment.variables.back().slot);
 			expressions.back()->variable->slotScope = block[assignmentIndex]->assignment.variables.back().slotScope;
-			conditionGraph.add_node(ConditionGraph::Node::TRUTHY_TEST, function.labels.size(), targetLabel, &expressions);
+			conditionGraph.add_node(ConditionGraph::Node::TRUTHY_TEST, INVALID_ID, targetLabel, &expressions);
 		}
 		
 		expressions.back() = conditionGraph.build_condition();
