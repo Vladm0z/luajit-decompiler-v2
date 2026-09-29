@@ -3438,18 +3438,14 @@ void Ast::clean_up_block(Function& function, std::vector<Statement*>& block, uin
 			
 			continue;
 		case AST_STATEMENT_IF:
-			block.emplace(block.begin() + i, nullptr);
-			i++;
 			blockInfo.index = i;
 			clean_up_block(function, block[i]->block, variableCounter, iteratorCounter, &blockInfo);
 			if (!block[i]->block.size()
 				&& block[i]->assignment.expressions.back()->type == AST_EXPRESSION_CONSTANT
 				&& block[i]->assignment.expressions.back()->constant->type == AST_CONSTANT_FALSE)
 				block[i]->type = AST_STATEMENT_EMPTY;
-			
 			if (i != block.size() - 1 && block[i + 1]->type == AST_STATEMENT_ELSE) {
 				i++;
-
 				if (block[i - 1]->type == AST_STATEMENT_EMPTY) {
 					block[i]->type = AST_STATEMENT_EMPTY;
 					block.reserve(block.size() + block[i]->block.size());
@@ -3460,18 +3456,9 @@ void Ast::clean_up_block(Function& function, std::vector<Statement*>& block, uin
 					blockInfo.index++;
 					clean_up_block(function, block[i]->block, variableCounter, iteratorCounter, &blockInfo);
 					blockInfo.index--;
-
 					if (!block[i]->block.size()) block[i]->type = AST_STATEMENT_EMPTY;
 				}
 			}
-
-			if (block[blockInfo.index - 1]) {
-				block[blockInfo.index - 1]->instruction.target = block[blockInfo.index]->instruction.id;
-				continue;
-			}
-
-			block.erase(block.begin() + blockInfo.index - 1);
-			i--;
 			continue;
 		}
 	}
