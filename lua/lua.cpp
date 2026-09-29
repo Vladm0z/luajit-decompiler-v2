@@ -999,6 +999,8 @@ uint8_t Lua::get_operator_precedence(const Ast::Expression& expression) {
 		case Ast::AST_BINARY_OR:
 			return 0;
 		}
+		break;
+
 	case Ast::AST_EXPRESSION_UNARY_OPERATION:
 		return 6;
 	}

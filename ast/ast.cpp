@@ -3143,7 +3143,7 @@ void Ast::clean_up_block(Function& function, std::vector<Statement*>& block, uin
 			if (function.hasDebugInfo) {
 				for (uint8_t j = block[i]->assignment.variables.size(); j--;) {
 					(*block[i]->assignment.variables[j].slotScope)->name = block[i]->locals->names[j];
-					function.usedNames.insert(block[i]->locals->names[j]);   // <-- ADD THIS LINE
+					function.usedNames.insert(block[i]->locals->names[j]);
 				}
 			} else {
 				for (uint8_t j = 0; j < block[i]->assignment.variables.size(); j++) {
@@ -3317,7 +3317,7 @@ void Ast::clean_up_block(Function& function, std::vector<Statement*>& block, uin
 			}
 			for (uint8_t j = block[i]->assignment.variables.size(); j--;) {
 				(*block[i]->assignment.variables[j].slotScope)->name = block[i]->locals->names[j];
-				function.usedNames.insert(block[i]->locals->names[j]);   // <-- ADD THIS LINE
+				function.usedNames.insert(block[i]->locals->names[j]);
 			}
 			clean_up_block(function, block[i]->block, variableCounter, iteratorCounter, nullptr);
 			continue;
@@ -3769,7 +3769,9 @@ Ast::Expression* Ast::new_primitive(const uint8_t& primitive) {
 		expression->constant->type = AST_CONSTANT_TRUE;
 		break;
 	default:
-		throw nullptr;
+		assert(false, "Invalid primitive constant", bytecode.filePath, DEBUG_INFO);
+		expression->constant->type = AST_CONSTANT_NIL;
+		break;
 	}
 
 	return expression;

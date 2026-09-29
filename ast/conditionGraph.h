@@ -38,7 +38,7 @@ struct ConditionGraph {
 		} type;
 		Node(const TYPE& type) : type(type) {}
 		uint32_t nodeLabel = INVALID_ID;
-		Node* takenSucc = nullptr;   // successor reached when the bytecode jump is taken
+		Node* takenSucc = nullptr; // successor reached when the bytecode jump is taken
 		Node* trueSucc = nullptr;
 		Node* falseSucc = nullptr;
 		struct PredEdge {
@@ -104,16 +104,61 @@ struct ConditionGraph {
 		case Bytecode::BC_OP_ISFC:
 		case Bytecode::BC_OP_ISF: return Node::FALSY_TEST;
 		case Bytecode::BC_OP_JMP: return Node::UNCONDITIONAL_TRUE;
-		default: throw nullptr;
+		default:
+			assert(false, "Unsupported condition instruction", "", DEBUG_INFO);
+			return Node::UNCONDITIONAL_TRUE;
+		}
+	}
+
+	static uint8_t get_type_preference(const Node::TYPE& nodeType, const bool& inverted) {
+		switch (nodeType) {
+		case Node::LESS_THAN:
+		case Node::LESS_EQUAL:
+		case Node::GREATER_THEN:
+		case Node::GREATER_EQUAL:
+			return inverted ? 1 : 3;
+
+		case Node::NOT_LESS_THAN:
+		case Node::NOT_LESS_EQUAL:
+		case Node::NOT_GREATER_THEN:
+		case Node::NOT_GREATER_EQUAL:
+			return inverted ? 3 : 1;
+
+		case Node::EQUAL:
+		case Node::NOT_EQUAL:
+		case Node::UNCONDITIONAL_TRUE:
+		case Node::UNCONDITIONAL_FALSE:
+			return 3;
+
+		case Node::TRUTHY_TEST:
+			return inverted ? 2 : 3;
+
+		case Node::FALSY_TEST:
+			return inverted ? 3 : 2;
+
+		case Node::AND:
+		case Node::OR:
+			return inverted ? 0 : 3;
+
+		case Node::NOT_AND:
+		case Node::NOT_OR:
+			return inverted ? 3 : 0;
+
+		default:
+			return 3;
 		}
 	}
 
 	void add_node(const Node::TYPE& type, const uint32_t& nodeLabel, const uint32_t& targetLabel,
 		std::vector<Expression*>* const& expressions, const bool& hasAlternateTarget = false, const bool& fallsThrough = true) {
 		Node* node = new_node(type);
+		if (!entry) entry = node;
 		node->nodeLabel = nodeLabel;
 		node->expressions = expressions;
-		node->fallsThrough = fallsThrough;
+		node->fallsThrough =
+			fallsThrough
+			&& type != Node::UNCONDITIONAL_TRUE
+			&& type != Node::UNCONDITIONAL_FALSE;
 		conditionNodes.emplace_back(node);
 		targetLabels[node] = targetLabel;
 		alternateTargets[node] = hasAlternateTarget;
@@ -137,7 +182,7 @@ struct ConditionGraph {
 		for (auto node : conditionNodes) {
 			if (node->nodeLabel != INVALID_ID) labelToNode[node->nodeLabel] = node;
 		}
-		// 1. resolve taken (jump) successors without writing edges yet
+		// resolve taken (jump) successors without writing edges yet
 		for (uint32_t i = 0; i < addedCount; i++) {
 			Node* node = conditionNodes[i];
 			auto it = targetLabels.find(node);
@@ -146,26 +191,47 @@ struct ConditionGraph {
 			if (labelIt == labelToNode.end()) return false;
 			node->takenSucc = labelIt->second;
 		}
-		// 2. orient polarity relative to exits (port of ConditionBuilder::fix_return_nodes)
+		// orient polarity relative to exits (port of ConditionBuilder::fix_return_nodes)
 		for (uint32_t i = 0; i < addedCount; i++) {
 			Node* node = conditionNodes[i];
 			if (!node->takenSucc) continue;
-			if (node->takenSucc == endTarget
-				&& (node->type == Node::TRUTHY_TEST || node->type == Node::FALSY_TEST)) {
-				node->inverted = node->type == Node::FALSY_TEST;
+			if (node->takenSucc == endTarget) {
 				node->takenSucc = node->type == Node::TRUTHY_TEST ? trueTarget : falseTarget;
+				node->inverted = node->type == Node::FALSY_TEST;
 			} else if (node->takenSucc == falseTarget) {
 				node->inverted = true;
 			} else if (node->takenSucc == trueTarget) {
 				node->inverted = false;
 			}
 		}
-		// 3. write taken edges with the uniform colour rule
+		
+		// port of ConditionBuilder::fix_return_nodes preference for intermediate targets.
+		for (uint32_t i = 0; i < addedCount; i++) {
+			Node* node = conditionNodes[i];
+
+			if (!node->takenSucc || node->takenSucc->isExit()) continue;
+
+			if (get_type_preference(node->type, node->inverted) != 3) {
+				node->inverted = true;
+			}
+		}
+		
+		// port of ConditionBuilder::build_boolean_logic alternate-target rules
+		for (uint32_t i = 0; i + 1 < addedCount; i++) {
+			Node* node = conditionNodes[i];
+			if (alternateTargets[node]
+				&& ((i && conditionNodes[i - 1]->takenSucc == endAssignment)
+					|| conditionNodes[i + 1] == endAssignment))
+				node->takenSucc = endAssignment;
+			if (node->takenSucc == endAssignment && i && alternateTargets[conditionNodes[i - 1]])
+				conditionNodes[i - 1]->takenSucc = endAssignment;
+		}
+	
+		// write taken edges with the uniform colour rule
 		for (uint32_t i = 0; i < addedCount; i++) {
 			Node* node = conditionNodes[i];
 			if (node->takenSucc) link_edge(node, node->takenSucc, get_edge_color(node));
 		}
-		// 4. assignment mode: truthiness tests feeding boolean exits yield booleans
 		if (type == ASSIGNMENT) {
 			for (uint32_t i = 0; i < addedCount; i++) {
 				Node* node = conditionNodes[i];
@@ -177,11 +243,19 @@ struct ConditionGraph {
 				else if (node->type == Node::FALSY_TEST) node->type = Node::BOOL_FALSY_TEST;
 			}
 		}
-		// 5. fall-through (not-taken) edges in program order
+		// fall-through (not-taken) edges in program order
 		for (uint32_t i = 0; i < addedCount; i++) {
 			Node* const from = conditionNodes[i];
 			if (!from->fallsThrough) continue;
-			Node* const fall = i + 1 < addedCount ? conditionNodes[i + 1] : (type == STATEMENT ? trueTarget : endTarget);
+			
+			Node* fall = (i + 1 < addedCount) ? conditionNodes[i + 1] : nullptr;
+			if (!fall) {
+				if (from->takenSucc == trueTarget) fall = falseTarget;
+				else if (from->takenSucc == falseTarget) fall = trueTarget;
+				else if (type == ASSIGNMENT && from->takenSucc == endTarget) fall = endTarget;
+				else fall = (type == STATEMENT ? trueTarget : endTarget); // fallback
+			}
+			
 			if (!fall || fall == from->takenSucc) continue;
 			link_edge(from, fall, get_edge_color(from) == EdgeColor::True ? EdgeColor::False : EdgeColor::True);
 		}
@@ -190,7 +264,7 @@ struct ConditionGraph {
 		return true;
 	}
 
-	// uniform rule: taken jump == expression true (orientation already applied)
+	// uniform rule: taken jump == expression true
 	EdgeColor get_edge_color(Node* node) {
 		return node->inverted ? EdgeColor::False : EdgeColor::True;
 	}
@@ -280,20 +354,27 @@ struct ConditionGraph {
 	}
 
 	bool twist_to_resolve(Node* node) {
-		EdgeColor targetColor = EdgeColor::True;
-		bool found = false;
+		int trueCount = 0;
+		int falseCount = 0;
 		for (const auto& predEdge : node->preds) {
 			if (predEdge.from->removed) continue;
-			targetColor = predEdge.color;
-			found = true;
-			break;
+			if (predEdge.color == EdgeColor::True) {
+				trueCount++;
+			} else if (predEdge.color == EdgeColor::False) {
+				falseCount++;
+			}
 		}
-		if (!found) return true;
+		if (!trueCount || !falseCount) return true;
+
+		EdgeColor targetColor = trueCount >= falseCount
+			? EdgeColor::True
+			: EdgeColor::False;
+
 		for (const auto& predEdge : node->preds) {
 			if (predEdge.from->removed) continue;
 			if (predEdge.color == targetColor) continue;
 			Node* pred = predEdge.from;
-			if (!pred->isAtom() || pred->twists) return false;   // untwistable DAG: reject, do not oscillate
+			if (!pred->isAtom() || pred->twists) return false;
 			twist_node(pred);
 		}
 		return true;
@@ -305,6 +386,15 @@ struct ConditionGraph {
 		std::swap(node->trueSucc, node->falseSucc);
 		recolor_incoming(node->trueSucc, node, EdgeColor::True);
 		recolor_incoming(node->falseSucc, node, EdgeColor::False);
+	}
+	
+	void reset_all_twists() {
+		for (auto node : conditionNodes) {
+			// If a node was twisted an odd number of times, twist it one more time
+			if (node->twists % 2 != 0) {
+				twist_node(node);
+			}
+		}
 	}
 
 	void recolor_incoming(Node* succ, Node* pred, EdgeColor newColor) {
@@ -358,51 +448,64 @@ struct ConditionGraph {
 		return anchor;
 	}
 
-	bool reduce_ternary() {
+	bool reduce_diamond() {
 		for (auto c0 : topo) {
 			if (c0->isExit() || c0->removed || !c0->trueSucc || !c0->falseSucc) continue;
 			Node* c1 = c0->trueSucc;
 			Node* c2 = c0->falseSucc;
+			if (c1 == c2) continue;
 			if (c1->isExit() || c2->isExit() || c1->removed || c2->removed) continue;
 			if (!c1->trueSucc || !c1->falseSucc || !c2->trueSucc || !c2->falseSucc) continue;
-			if (c1->trueSucc != c2->trueSucc || c1->falseSucc != c2->falseSucc) continue;
-			Node* combined = new_node(Node::OR);
+			
+			Node* trueExit = nullptr;
+			Node* falseExit = nullptr;
+
+			// Diamond
+			if (c1->trueSucc == c2->trueSucc && c1->falseSucc == c2->falseSucc) {
+				trueExit = c1->trueSucc;
+				falseExit = c1->falseSucc;
+			} 
+			// XOR / Inequality Diamond
+			else if (c1->trueSucc == c2->falseSucc && c1->falseSucc == c2->trueSucc) {
+				trueExit = c1->trueSucc;
+				falseExit = c1->falseSucc;
+			} 
+			else {
+				continue;
+			}
+			
+			Expression* c0_expr = build_expression(c0);
+			Expression* c1_expr = build_expression(c1);
+			Expression* c2_expr = build_expression(c2);
+			
+			if (!c0_expr || !c1_expr || !c2_expr) continue;
+			
+			// build_ite automatically generates the correct short-circuiting AST:
+			// (c0 AND c1) OR (NOT c0 AND c2)
+			Expression* combined_expr = build_ite(c0_expr, c1_expr, c2_expr);
+			if (!combined_expr) continue;
+			
+			Node* combined = new_node(Node::OR); 
 			combined->nodeLabel = c0->nodeLabel;
-			combined->trueSucc = c1->trueSucc;
-			combined->falseSucc = c1->falseSucc;
-			Node* leftAnd = new_node(Node::AND);
-			leftAnd->leftNode = copy_node_shallow(c0);
-			leftAnd->rightNode = copy_node_shallow(c1);
-			Node* rightAnd = new_node(Node::AND);
-			Node* notC0 = copy_node_shallow(c0);
-			notC0->inverted = !notC0->inverted;
-			rightAnd->leftNode = notC0;
-			rightAnd->rightNode = copy_node_shallow(c2);
-			combined->leftNode = leftAnd;
-			combined->rightNode = rightAnd;
-			combined->preds = c0->preds;
-			for (auto& pe : combined->preds) {
-				if (pe.from->trueSucc == c0) pe.from->trueSucc = combined;
-				if (pe.from->falseSucc == c0) pe.from->falseSucc = combined;
+			combined->trueSucc = trueExit;
+			combined->falseSucc = falseExit;
+			combined->resultExpression = combined_expr;
+			
+			std::vector<Node*> removedNodes = {c0, c1, c2};
+			replace_nodes(removedNodes, combined);
+			
+			// Clean up the predecessor lists of the exit nodes
+			for (auto it = trueExit->preds.begin(); it != trueExit->preds.end(); ) {
+				if (it->from == c1 || it->from == c2) it = trueExit->preds.erase(it);
+				else ++it;
 			}
-			if (combined->trueSucc) {
-				for (auto& pe : combined->trueSucc->preds) {
-					if (pe.from == c1 || pe.from == c2) pe.from = combined;
-				}
-				deduplicate_preds(combined->trueSucc);
+			for (auto it = falseExit->preds.begin(); it != falseExit->preds.end(); ) {
+				if (it->from == c1 || it->from == c2) it = falseExit->preds.erase(it);
+				else ++it;
 			}
-			if (combined->falseSucc) {
-				for (auto& pe : combined->falseSucc->preds) {
-					if (pe.from == c1 || pe.from == c2) pe.from = combined;
-				}
-				deduplicate_preds(combined->falseSucc);
-			}
-			c0->removed = true;
-			c1->removed = true;
-			c2->removed = true;
-			replace_in_condition_nodes(c0, combined);
-			remove_from_condition_nodes(c1);
-			remove_from_condition_nodes(c2);
+			trueExit->preds.push_back({combined, EdgeColor::True});
+			falseExit->preds.push_back({combined, EdgeColor::False});
+			
 			return topological_sort();
 		}
 		return false;
@@ -453,13 +556,8 @@ struct ConditionGraph {
 			combined->rightNode = copy_node_shallow(NG);
 			combined->trueSucc = NG->trueSucc;
 			combined->falseSucc = NG->falseSucc ? NG->falseSucc : falseTarget;
-			combined->preds = root->preds;
-			update_pred_references(root, combined);
-			update_succ_references(NG, combined);
-			root->removed = true;
-			NG->removed = true;
-			replace_in_condition_nodes(root, combined);
-			remove_from_condition_nodes(NG);
+			
+			replace_nodes({root, NG}, combined);
 			return true;
 		}
 		if ((NG == trueTarget || NG->isExit()) && !NR->isExit() && !NR->removed) {
@@ -469,13 +567,8 @@ struct ConditionGraph {
 			combined->rightNode = copy_node_shallow(NR);
 			combined->trueSucc = NR->trueSucc ? NR->trueSucc : trueTarget;
 			combined->falseSucc = NR->falseSucc;
-			combined->preds = root->preds;
-			update_pred_references(root, combined);
-			update_succ_references(NR, combined);
-			root->removed = true;
-			NR->removed = true;
-			replace_in_condition_nodes(root, combined);
-			remove_from_condition_nodes(NR);
+			
+			replace_nodes({root, NR}, combined);
 			return true;
 		}
 		return false;
@@ -483,10 +576,19 @@ struct ConditionGraph {
 
 	Expression* build_chain_expression(Node* root, Node* anchor, bool isAnd) {
 		std::vector<Node*> chain;
-		for (auto node : topo) {
-			if (node->removed || node->isExit()) continue;
-			if (node->topoIndex >= root->topoIndex && node->topoIndex <= anchor->topoIndex) chain.push_back(node);
+		Node* current = root;
+		uint32_t guard = 0;
+
+		while (current && current != anchor && guard++ <= conditionNodes.size()) {
+			if (current->removed || current->isExit()) return nullptr;
+			chain.push_back(current);
+			current = isAnd
+				? current->trueSucc
+				: current->falseSucc;
 		}
+
+		if (current != anchor || anchor->removed || anchor->isExit()) return nullptr;
+		chain.push_back(anchor);
 		if (!chain.size()) return nullptr;
 		if (chain.size() == 1) return build_expression(chain[0]);
 		return build_expression_recursive(chain, 0, (uint32_t)chain.size() - 1, isAnd);
@@ -546,16 +648,21 @@ struct ConditionGraph {
 		combined->nodeLabel = root->nodeLabel;
 		combined->trueSucc = anchor->trueSucc;
 		combined->falseSucc = anchor->falseSucc;
-		combined->preds = root->preds;
 		combined->resultExpression = expr;
-		update_pred_references(root, combined);
-		update_succ_references(anchor, combined);
-		for (auto node : topo) {
-			if (node->removed || node->isExit()) continue;
-			if (node->topoIndex >= root->topoIndex && node->topoIndex <= anchor->topoIndex && node != root) node->removed = true;
+		
+		std::vector<Node*> removedNodes;
+		Node* current = root;
+		uint32_t guard = 0;
+
+		while (current && guard++ <= conditionNodes.size()) {
+			removedNodes.push_back(current);
+			if (current == anchor) break;
+			current = opType == Node::AND
+				? current->trueSucc
+				: current->falseSucc;
 		}
-		root->removed = true;
-		replace_in_condition_nodes(root, combined);
+		
+		replace_nodes(removedNodes, combined);
 		return combined;
 	}
 
@@ -591,6 +698,8 @@ struct ConditionGraph {
 	}
 
 	void replace_in_condition_nodes(Node* oldNode, Node* newNode) {
+		if (entry == oldNode) entry = newNode;
+
 		for (uint32_t i = 0; i < conditionNodes.size(); i++) {
 			if (conditionNodes[i] == oldNode) {
 				conditionNodes[i] = newNode;
@@ -600,32 +709,273 @@ struct ConditionGraph {
 	}
 
 	void remove_from_condition_nodes(Node* node) {
+		if (entry == node) entry = nullptr;
+
 		conditionNodes.erase(
 			std::remove(conditionNodes.begin(), conditionNodes.end(), node),
 			conditionNodes.end());
 	}
 
+	static bool is_true_expression(const Expression* expression) {
+		return expression
+			&& expression->type == AST_EXPRESSION_CONSTANT
+			&& expression->constant->type == AST_CONSTANT_TRUE;
+	}
+
+	static bool is_false_expression(const Expression* expression) {
+		return expression
+			&& expression->type == AST_EXPRESSION_CONSTANT
+			&& expression->constant->type == AST_CONSTANT_FALSE;
+	}
+
+	Expression* build_ite(Expression* cond, Expression* trueExpr, Expression* falseExpr) {
+		if (!cond || !trueExpr || !falseExpr) return nullptr;
+
+		if (trueExpr == falseExpr) return trueExpr;
+
+		if (is_true_expression(trueExpr) && is_false_expression(falseExpr)) {
+			return cond;
+		}
+
+		if (is_false_expression(trueExpr) && is_true_expression(falseExpr)) {
+			return build_not(cond);
+		}
+
+		if (is_true_expression(trueExpr)) {
+			return build_binary(Node::OR, cond, falseExpr);
+		}
+
+		if (is_false_expression(falseExpr)) {
+			return build_binary(Node::AND, cond, trueExpr);
+		}
+
+		if (is_false_expression(trueExpr)) {
+			return build_binary(Node::AND, build_not(cond), falseExpr);
+		}
+
+		if (is_true_expression(falseExpr)) {
+			return build_binary(Node::OR, build_not(cond), trueExpr);
+		}
+
+		return build_binary(
+			Node::OR,
+			build_binary(Node::AND, cond, trueExpr),
+			build_binary(Node::AND, build_not(cond), falseExpr)
+		);
+	}
+
+	Expression* build_generic_expression(
+		Node* node,
+		std::unordered_map<Node*, Expression*>& memo,
+		std::unordered_set<Node*>& visiting
+	) {
+		if (!node) return nullptr;
+
+		if (node == trueTarget) return ast.new_primitive(2);
+		if (node == falseTarget) return ast.new_primitive(1);
+		if (node == endTarget) return ast.new_primitive(1);
+
+		if (node->resultExpression) return node->resultExpression;
+		if (node->removed) return nullptr;
+
+		auto memoIt = memo.find(node);
+		if (memoIt != memo.end()) return memoIt->second;
+
+		if (visiting.count(node)) return nullptr;
+		visiting.insert(node);
+
+		Expression* result = nullptr;
+
+		if (node->type == Node::UNCONDITIONAL_TRUE || node->type == Node::UNCONDITIONAL_FALSE) {
+			Node* next = node->trueSucc ? node->trueSucc : node->falseSucc;
+
+			if (!next) {
+				next = node->type == Node::UNCONDITIONAL_TRUE ? trueTarget : falseTarget;
+			}
+
+			result = build_generic_expression(next, memo, visiting);
+		} else {
+			Expression* cond = build_expression(node);
+
+			if (cond) {
+				Node* trueNode = node->trueSucc ? node->trueSucc : trueTarget;
+				Node* falseNode = node->falseSucc ? node->falseSucc : falseTarget;
+
+				Expression* trueExpr = build_generic_expression(trueNode, memo, visiting);
+				Expression* falseExpr = build_generic_expression(falseNode, memo, visiting);
+
+				result = build_ite(cond, trueExpr, falseExpr);
+			}
+		}
+		visiting.erase(node);
+		memo[node] = result;
+		return result;
+	}
+
+	bool reduce_generic() {
+		Node* root = nullptr;
+
+		// Prefer a node with no active incoming edges.
+		for (auto node : conditionNodes) {
+			if (node->removed || node->isExit()) continue;
+
+			bool hasActivePred = false;
+
+			for (const auto& predEdge : node->preds) {
+				if (!predEdge.from->removed) {
+					hasActivePred = true;
+					break;
+				}
+			}
+
+			if (!hasActivePred) {
+				root = node;
+				break;
+			}
+		}
+
+		// Fallback to tracked entry.
+		if (!root || root->removed || root->isExit()) {
+			root = entry;
+
+			if (!root || root->removed || root->isExit()) {
+				root = nullptr;
+
+				for (auto node : conditionNodes) {
+					if (!node->removed && !node->isExit()) {
+						root = node;
+						break;
+					}
+				}
+			}
+		}
+
+		if (!root) return false;
+
+		std::unordered_map<Node*, Expression*> memo;
+		std::unordered_set<Node*> visiting;
+
+		Expression* expression = build_generic_expression(root, memo, visiting);
+
+		if (!expression) return false;
+
+		Node* combined = new_node(Node::OR);
+
+		combined->nodeLabel = root->nodeLabel;
+		combined->trueSucc = trueTarget;
+		combined->falseSucc = falseTarget;
+		combined->resultExpression = expression;
+
+		for (auto node : conditionNodes) {
+			if (!node->isExit()) node->removed = true;
+		}
+
+		conditionNodes.clear();
+		conditionNodes.emplace_back(combined);
+
+		entry = combined;
+
+		return true;
+	}
+
+	void replace_nodes(const std::vector<Node*>& removedNodes, Node* newNode) {
+		std::unordered_set<Node*> removedSet(removedNodes.begin(), removedNodes.end());
+		
+		if (newNode->trueSucc && removedSet.count(newNode->trueSucc)) {
+			newNode->trueSucc = trueTarget; 
+		}
+		if (newNode->falseSucc && removedSet.count(newNode->falseSucc)) {
+			newNode->falseSucc = falseTarget;
+		}
+
+		// Update all successors in the entire graph to point to newNode
+		for (Node* node : conditionNodes) {
+			if (node->removed) continue;
+			if (node->trueSucc && removedSet.count(node->trueSucc)) {
+				node->trueSucc = newNode;
+			}
+			if (node->falseSucc && removedSet.count(node->falseSucc)) {
+				node->falseSucc = newNode;
+			}
+		}
+		
+		// Collect predecessors from all removed nodes and transfer them to newNode
+		for (Node* removed : removedNodes) {
+			for (const auto& pe : removed->preds) {
+				if (!pe.from->removed && !removedSet.count(pe.from)) {
+					newNode->preds.push_back({pe.from, pe.color});
+				}
+			}
+			removed->removed = true;
+		}
+		
+		// Deduplicate predecessors
+		deduplicate_preds(newNode);
+		
+		// Update conditionNodes list and entry point
+		bool wasEntry = entry && removedSet.count(entry);
+		
+		for (Node* removed : removedNodes) {
+			conditionNodes.erase(
+				std::remove(conditionNodes.begin(), conditionNodes.end(), removed),
+				conditionNodes.end());
+		}
+		
+		bool found = false;
+		for (Node* n : conditionNodes) {
+			if (n == newNode) { found = true; break; }
+		}
+		if (!found) conditionNodes.push_back(newNode);
+		
+		if (wasEntry) {
+			entry = newNode;
+		}
+	}
+
 	bool reduce_patterns() {
 		bool changed = true;
+
 		while (changed) {
 			changed = false;
-			if (reduce_ternary()) {
+
+			if (reduce_diamond()) {
 				changed = true;
 				continue;
 			}
+
 			if (reduce_and_or()) {
 				changed = true;
 				continue;
 			}
 		}
+
+		uint32_t activeCount = 0;
+
+		for (auto node : conditionNodes) {
+			if (!node->removed && !node->isExit()) {
+				activeCount++;
+			}
+		}
+
+		if (activeCount == 0) return false;
+
+		if (activeCount != 1) {
+			if (!reduce_generic()) {
+				print("ConditionGraph failure: reduce_generic failed on active graph");
+				return false;
+			}
+		}
+
 		conditionNodes.erase(
 			std::remove_if(conditionNodes.begin(), conditionNodes.end(),
 				[](Node* n) { return n->removed; }),
 			conditionNodes.end());
+
 		conditionNodes.erase(
 			std::remove_if(conditionNodes.begin(), conditionNodes.end(),
 				[](Node* n) { return n->isExit(); }),
 			conditionNodes.end());
+
 		return conditionNodes.size() == 1;
 	}
 
@@ -650,13 +1000,21 @@ struct ConditionGraph {
 		case Node::NOT_EQUAL:
 			return build_binary(node->inverted ? Node::EQUAL : Node::NOT_EQUAL, (*node->expressions)[0], (*node->expressions)[1]);
 		case Node::TRUTHY_TEST:
-			return node->inverted ? build_not((*node->expressions).back()) : (*node->expressions).back();
+			return node->inverted
+				? build_not((*node->expressions).back())
+				: (*node->expressions).back();
 		case Node::FALSY_TEST:
-			return node->inverted ? (*node->expressions).back() : build_not((*node->expressions).back());
+			return node->inverted
+				? (*node->expressions).back()
+				: build_not((*node->expressions).back());
 		case Node::BOOL_TRUTHY_TEST:
-			return node->inverted ? build_not((*node->expressions).back()) : build_not(build_not((*node->expressions).back()));
+			return node->inverted
+				? build_not((*node->expressions).back())
+				: build_not(build_not((*node->expressions).back()));
 		case Node::BOOL_FALSY_TEST:
-			return node->inverted ? build_not(build_not((*node->expressions).back())) : build_not((*node->expressions).back());
+			return node->inverted
+				? build_not(build_not((*node->expressions).back()))
+				: build_not((*node->expressions).back());
 		case Node::UNCONDITIONAL_TRUE:
 			return ast.new_primitive(node->inverted ? 1 : 2);
 		case Node::UNCONDITIONAL_FALSE:
@@ -676,7 +1034,8 @@ struct ConditionGraph {
 			}
 			return nullptr;
 		default:
-			throw nullptr;
+			assert(false, "Unhandled condition graph node type", ast.bytecode.filePath, DEBUG_INFO);
+			return nullptr;
 		}
 	}
 
@@ -722,7 +1081,8 @@ struct ConditionGraph {
 			expression->binaryOperation->type = AST_BINARY_OR;
 			break;
 		default:
-			throw nullptr;
+			assert(false, "Unhandled condition graph binary node type", ast.bytecode.filePath, DEBUG_INFO);
+			return nullptr;
 		}
 		expression->binaryOperation->leftOperand = leftOperand;
 		expression->binaryOperation->rightOperand = rightOperand;
@@ -730,13 +1090,29 @@ struct ConditionGraph {
 	}
 
 	Expression* build_condition() {
-		if (!link_nodes()) return nullptr;
-		if (!topological_sort()) return nullptr;
-		if (!make_monochromatic()) return nullptr;
-		if (!reduce_patterns()) return nullptr;
-		if (conditionNodes.empty()) return nullptr;
+		if (!link_nodes()) {
+			print("ConditionGraph failure: link_nodes");
+			return nullptr;
+		}
+		if (!topological_sort()) {
+			print("ConditionGraph failure: topological_sort");
+			return nullptr;
+		}
+		if (!make_monochromatic()) {
+			reset_all_twists();
+		}
+		if (!reduce_patterns()) {
+			print("ConditionGraph failure: reduce_patterns ("
+				+ std::to_string(conditionNodes.size())
+				+ " nodes left)");
+			return nullptr;
+		}
+		if (conditionNodes.empty()) {
+			print("ConditionGraph failure: no remaining nodes after reduction");
+			return nullptr;
+		}
 		Node* node = conditionNodes.back();
-		// safety net: orient the final expression toward the then-branch / true value
+		// orient the final expression toward the then-branch / true value
 		if (node->trueSucc == falseTarget) {
 			if (node->resultExpression) node->resultExpression = build_not(node->resultExpression);
 			else node->inverted = !node->inverted;
@@ -755,4 +1131,5 @@ struct ConditionGraph {
 	Node* endTarget = nullptr;
 	Node* trueTarget = nullptr;
 	Node* falseTarget = nullptr;
+	Node* entry = nullptr;
 };
