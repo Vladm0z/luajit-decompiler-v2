@@ -63,16 +63,26 @@ void Bytecode::Prototype::read_instructions() {
 			instructions[i].c = get_next_byte();
 			instructions[i].b = get_next_byte();
 		} else {
-			instructions[i].d = get_next_byte();
-			instructions[i].d |= (uint16_t)get_next_byte() << 8;
+			uint8_t b1 = get_next_byte();
+			uint8_t b2 = get_next_byte();
+			if (bytecode.header.flags & Bytecode::BC_F_BE) {
+				instructions[i].d = (uint16_t)b1 << 8 | b2;
+			} else {
+				instructions[i].d = (uint16_t)b2 << 8 | b1;
+			}
 		}
 	}
 }
 
 void Bytecode::Prototype::read_upvalues() {
 	for (uint8_t i = 0; i < upvalues.size(); i++) {
-		upvalues[i] = get_next_byte();
-		upvalues[i] |= (uint16_t)get_next_byte() << 8;
+		uint8_t b1 = get_next_byte();
+		uint8_t b2 = get_next_byte();
+		if (bytecode.header.flags & Bytecode::BC_F_BE) {
+			upvalues[i] = (uint16_t)b1 << 8 | b2;
+		} else {
+			upvalues[i] = (uint16_t)b2 << 8 | b1;
+		}
 	}
 }
 
@@ -153,15 +163,25 @@ void Bytecode::Prototype::read_debug_info() {
 		}
 	} else if (header.lineCount < 65536) {
 		for (uint32_t i = 0; i < lineMap.size(); i++) {
-			lineMap[i] = get_next_byte();
-			lineMap[i] |= (uint16_t)get_next_byte() << 8;
+			uint8_t b1 = get_next_byte();
+			uint8_t b2 = get_next_byte();
+			if (bytecode.header.flags & Bytecode::BC_F_BE) {
+				lineMap[i] = (uint16_t)b1 << 8 | b2;
+			} else {
+				lineMap[i] = (uint16_t)b2 << 8 | b1;
+			}
 		}
 	} else {
 		for (uint32_t i = 0; i < lineMap.size(); i++) {
-			lineMap[i] = get_next_byte();
-			lineMap[i] |= (uint32_t)get_next_byte() << 8;
-			lineMap[i] |= (uint32_t)get_next_byte() << 16;
-			lineMap[i] |= (uint32_t)get_next_byte() << 24;
+			uint8_t b1 = get_next_byte();
+			uint8_t b2 = get_next_byte();
+			uint8_t b3 = get_next_byte();
+			uint8_t b4 = get_next_byte();
+			if (bytecode.header.flags & Bytecode::BC_F_BE) {
+				lineMap[i] = (uint32_t)b1 << 24 | (uint32_t)b2 << 16 | (uint32_t)b3 << 8 | b4;
+			} else {
+				lineMap[i] = (uint32_t)b4 << 24 | (uint32_t)b3 << 16 | (uint32_t)b2 << 8 | b1;
+			}
 		}
 	}
 

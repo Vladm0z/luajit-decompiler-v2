@@ -1040,6 +1040,10 @@ struct ConditionGraph {
 	}
 
 	Expression* build_not(Expression* const& operand) {
+		if (operand->type == AST_EXPRESSION_UNARY_OPERATION && operand->unaryOperation->type == AST_UNARY_NOT) {
+			return operand->unaryOperation->operand;
+		}
+		
 		Expression* const expression = ast.new_expression(AST_EXPRESSION_UNARY_OPERATION);
 		expression->unaryOperation->type = AST_UNARY_NOT;
 		expression->unaryOperation->operand = operand;

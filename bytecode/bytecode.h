@@ -8,9 +8,10 @@ public:
 	struct TableNode;
 	struct VariableInfo;
 	struct Instruction;
-	#include "prototype.h"
+
 	#include "constants.h"
 	#include "instructions.h"
+	#include "prototype.h"
 
 	Bytecode(const std::string& filePath);
 	~Bytecode();
