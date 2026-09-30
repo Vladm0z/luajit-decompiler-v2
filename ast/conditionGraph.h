@@ -982,57 +982,71 @@ struct ConditionGraph {
 	Expression* build_expression(Node* node) {
 		if (!node) return nullptr;
 		if (node->resultExpression) return node->resultExpression;
+		
 		switch (node->type) {
+		// Relational Operators
 		case Node::LESS_THAN:
-		case Node::LESS_EQUAL:
-		case Node::GREATER_THEN:
-		case Node::GREATER_EQUAL:
-			return node->inverted ? build_not(build_binary(node->type, (*node->expressions)[0], (*node->expressions)[1]))
-				: build_binary(node->type, (*node->expressions)[0], (*node->expressions)[1]);
+			return build_binary(node->inverted ? Node::GREATER_EQUAL : Node::LESS_THAN, (*node->expressions)[0], (*node->expressions)[1]);
 		case Node::NOT_LESS_THAN:
+			return build_binary(node->inverted ? Node::LESS_THAN : Node::GREATER_EQUAL, (*node->expressions)[0], (*node->expressions)[1]);
+			
+		case Node::LESS_EQUAL:
+			return build_binary(node->inverted ? Node::GREATER_THEN : Node::LESS_EQUAL, (*node->expressions)[0], (*node->expressions)[1]);
 		case Node::NOT_LESS_EQUAL:
+			return build_binary(node->inverted ? Node::LESS_EQUAL : Node::GREATER_THEN, (*node->expressions)[0], (*node->expressions)[1]);
+			
+		case Node::GREATER_THEN:
+			return build_binary(node->inverted ? Node::LESS_EQUAL : Node::GREATER_THEN, (*node->expressions)[0], (*node->expressions)[1]);
 		case Node::NOT_GREATER_THEN:
+			return build_binary(node->inverted ? Node::GREATER_THEN : Node::LESS_EQUAL, (*node->expressions)[0], (*node->expressions)[1]);
+			
+		case Node::GREATER_EQUAL:
+			return build_binary(node->inverted ? Node::LESS_THAN : Node::GREATER_EQUAL, (*node->expressions)[0], (*node->expressions)[1]);
 		case Node::NOT_GREATER_EQUAL:
-			return node->inverted ? build_binary(node->type, (*node->expressions)[0], (*node->expressions)[1])
-				: build_not(build_binary(node->type, (*node->expressions)[0], (*node->expressions)[1]));
+			return build_binary(node->inverted ? Node::GREATER_EQUAL : Node::LESS_THAN, (*node->expressions)[0], (*node->expressions)[1]);
+
+		// Equality Operators
 		case Node::EQUAL:
 			return build_binary(node->inverted ? Node::NOT_EQUAL : Node::EQUAL, (*node->expressions)[0], (*node->expressions)[1]);
 		case Node::NOT_EQUAL:
 			return build_binary(node->inverted ? Node::EQUAL : Node::NOT_EQUAL, (*node->expressions)[0], (*node->expressions)[1]);
+
+		// Truthiness Tests
 		case Node::TRUTHY_TEST:
-			return node->inverted
-				? build_not((*node->expressions).back())
-				: (*node->expressions).back();
+			return node->inverted ? build_not((*node->expressions).back()) : (*node->expressions).back();
 		case Node::FALSY_TEST:
-			return node->inverted
-				? (*node->expressions).back()
-				: build_not((*node->expressions).back());
+			return node->inverted ? (*node->expressions).back() : build_not((*node->expressions).back());
+
+		// Boolean Enforcement (Lua's `not not A` pattern)
 		case Node::BOOL_TRUTHY_TEST:
-			return node->inverted
-				? build_not((*node->expressions).back())
-				: build_not(build_not((*node->expressions).back()));
+			return node->inverted ? build_not((*node->expressions).back()) : build_not(build_not((*node->expressions).back()));
 		case Node::BOOL_FALSY_TEST:
-			return node->inverted
-				? build_not(build_not((*node->expressions).back()))
-				: build_not((*node->expressions).back());
+			return node->inverted ? build_not(build_not((*node->expressions).back())) : build_not((*node->expressions).back());
+
+		// Unconditional Booleans
 		case Node::UNCONDITIONAL_TRUE:
-			return ast.new_primitive(node->inverted ? 1 : 2);
+			return ast.new_primitive(node->inverted ? 1 : 2); // 1 = false, 2 = true
 		case Node::UNCONDITIONAL_FALSE:
 			return ast.new_primitive(node->inverted ? 2 : 1);
+
+		// Logical Operators (AND / OR)
 		case Node::AND:
 		case Node::OR:
 			if (node->leftNode && node->rightNode) {
-				return node->inverted ? build_not(build_binary(node->type, build_expression(node->leftNode), build_expression(node->rightNode)))
-					: build_binary(node->type, build_expression(node->leftNode), build_expression(node->rightNode));
+				Expression* binary_expr = build_binary(node->type, build_expression(node->leftNode), build_expression(node->rightNode));
+				return node->inverted ? build_not(binary_expr) : binary_expr;
 			}
 			return nullptr;
+
 		case Node::NOT_AND:
 		case Node::NOT_OR:
 			if (node->leftNode && node->rightNode) {
-				return node->inverted ? build_binary(node->type, build_expression(node->leftNode), build_expression(node->rightNode))
-					: build_not(build_binary(node->type, build_expression(node->leftNode), build_expression(node->rightNode)));
+				Node::TYPE base_type = (node->type == Node::NOT_AND) ? Node::AND : Node::OR;
+				Expression* binary_expr = build_binary(base_type, build_expression(node->leftNode), build_expression(node->rightNode));				
+				return node->inverted ? binary_expr : build_not(binary_expr);
 			}
 			return nullptr;
+
 		default:
 			assert(false, "Unhandled condition graph node type", ast.bytecode.filePath, DEBUG_INFO);
 			return nullptr;

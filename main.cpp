@@ -8,6 +8,13 @@ struct Error {
 	const std::string line;
 };
 
+#include "parallel_decompiler.h"
+
+bool g_isParallelMode = false;
+std::mutex g_print_mutex;
+std::atomic<uint32_t> g_filesProcessed{0};
+std::atomic<uint32_t> g_filesFailed{0};
+
 static const HANDLE CONSOLE_OUTPUT = GetStdHandle(STD_OUTPUT_HANDLE);
 //static const HANDLE CONSOLE_INPUT = GetStdHandle(STD_INPUT_HANDLE);
 static bool isCommandLine;
@@ -236,6 +243,34 @@ static void wait_for_exit() {
 	};
 }
 
+
+static void create_directories(const Directory& directory, const std::string& outputBase) {
+    std::string dirPath = outputBase + directory.path;
+    CreateDirectoryA(dirPath.c_str(), NULL);
+    for (const auto& folder : directory.folders) {
+        create_directories(folder, outputBase);
+    }
+}
+
+static void collect_files(const Directory& directory, const std::string& inputBase, const std::string& outputBase, std::vector<std::string>& inputPaths, std::vector<std::string>& outputPaths) {
+    for (const auto& file : directory.files) {
+        std::string inputFile = inputBase + directory.path + file;
+        
+        std::string outputFile = file;
+        PathRemoveExtensionA(&outputFile[0]);
+        outputFile = outputFile.c_str(); 
+        outputFile += ".lua";
+        outputFile = outputBase + directory.path + outputFile;
+        
+        inputPaths.push_back(inputFile);
+        outputPaths.push_back(outputFile);
+    }
+    for (const auto& folder : directory.folders) {
+        collect_files(folder, inputBase, outputBase, inputPaths, outputPaths);
+    }
+}
+
+
 int main(int argc, char* argv[]) {
 	SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_SYSTEM_AWARE);
 
@@ -371,10 +406,25 @@ int main(int argc, char* argv[]) {
 	}
 
 	try {
-		if (!decompile_files_recursively(root)) {
-			print("--------------------\nAborted!");
-			wait_for_exit();
-			return EXIT_FAILURE;
+		create_directories(root, arguments.outputPath);
+		
+		std::vector<std::string> inputPaths;
+		std::vector<std::string> outputPaths;
+		collect_files(root, arguments.inputPath, arguments.outputPath, inputPaths, outputPaths);
+
+		DecompilerConfig config{
+			arguments.forceOverwrite,
+			arguments.ignoreDebugInfo,
+			arguments.minimizeDiffs,
+			arguments.unrestrictedAscii
+		};
+
+		try {
+			g_isParallelMode = true;
+			decompile_all_parallel(inputPaths, outputPaths, config);
+			g_isParallelMode = false;
+		} catch (...) {
+			throw;
 		}
 	} catch (...) {
 		throw;
@@ -391,17 +441,8 @@ void print(const std::string& message) {
 	WriteConsoleA(CONSOLE_OUTPUT, (message + '\n').data(), message.size() + 1, NULL, NULL);
 }
 
-/*
-std::string input() {
-	static char BUFFER[1024];
-
-	FlushConsoleInputBuffer(CONSOLE_INPUT);
-	DWORD charsRead;
-	return ReadConsoleA(CONSOLE_INPUT, BUFFER, sizeof(BUFFER), &charsRead, NULL) && charsRead > 2 ? std::string(BUFFER, charsRead - 2) : "";
-}
-*/
-
 void print_progress_bar(const double& progress, const double& total) {
+    if (g_isParallelMode) return; 
 	static char PROGRESS_BAR[] = "\r[====================]";
 
 	double ratio = total > 0.0 ? progress / total : 1.0;
@@ -419,6 +460,7 @@ void print_progress_bar(const double& progress, const double& total) {
 }
 
 void erase_progress_bar() {
+    if (g_isParallelMode) return;
 	static constexpr char PROGRESS_BAR_ERASER[] = "\r                      \r";
 
 	if (!isProgressBarActive) return;
