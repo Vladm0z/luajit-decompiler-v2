@@ -13,14 +13,18 @@ Default char is unsigned (/J)
 #pragma comment(linker, "/manifestdependency:\"type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 #pragma comment(lib, "shlwapi.lib")
 
+#include <algorithm>
+#include <atomic>
 #include <bit>
 #include <cmath>
 #include <cstdint>
+#include <deque>
+#include <span>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
-#include <algorithm>
 #include <windows.h>
 #include <conio.h>
 #include <fileapi.h>
@@ -41,6 +45,7 @@ void print_progress_bar(const double& progress = 0, const double& total = 100);
 void erase_progress_bar();
 void assert(const bool& assertion, const std::string& message, const std::string& filePath, const std::string& function, const std::string& source, const uint32_t& line);
 std::string byte_to_string(const uint8_t& byte);
+extern std::atomic<bool> g_isParallelMode;
 
 class Bytecode;
 class Ast;

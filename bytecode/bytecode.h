@@ -31,6 +31,7 @@ public:
 
 private:
 
+
 	static constexpr uint8_t MIN_PROTO_SIZE = 11;
 	static constexpr uint8_t MIN_FILE_SIZE = MIN_PROTO_SIZE + 7;
 
@@ -41,10 +42,14 @@ private:
 	void read_file(const uint32_t& byteCount);
 	uint32_t read_uleb128();
 	bool buffer_next_block();
-
+	
+	HANDLE fileMapping = NULL;
 	HANDLE file = INVALID_HANDLE_VALUE;
 	uint64_t fileSize = 0;
 	uint64_t bytesUnread = 0;
-	std::vector<uint8_t> fileBuffer;
-	std::vector<Prototype*> prototypes;
+	std::span<const uint8_t> fileBuffer;
+	std::deque<Prototype> prototypes;
+	const uint8_t* fileData = nullptr;
+	uint64_t fileCursor = 0;
+
 };

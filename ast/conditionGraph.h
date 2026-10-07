@@ -1,4 +1,5 @@
 struct ConditionGraph {
+    static inline void log(const std::string&) {}
 	enum TYPE {
 		ASSIGNMENT,
 		STATEMENT
@@ -38,7 +39,7 @@ struct ConditionGraph {
 		} type;
 		Node(const TYPE& type) : type(type) {}
 		uint32_t nodeLabel = INVALID_ID;
-		Node* takenSucc = nullptr; // successor reached when the bytecode jump is taken
+		Node* takenSucc = nullptr;
 		Node* trueSucc = nullptr;
 		Node* falseSucc = nullptr;
 		struct PredEdge {
@@ -55,6 +56,9 @@ struct ConditionGraph {
 		Expression* resultExpression = nullptr;
 		int topoIndex = -1;
 		bool removed = false;
+		uint32_t targetLabel = INVALID_ID;
+		bool alternateTarget = false;
+		uint8_t visit = 0;
 		bool isExit() const {
 			return type == END_TARGET || type == TRUE_TARGET || type == FALSE_TARGET;
 		}
@@ -75,14 +79,11 @@ struct ConditionGraph {
 		falseTarget->nodeLabel = falseTargetLabel;
 	}
 
-	~ConditionGraph() {
-		for (uint32_t i = nodes.size(); i--;) {
-			delete nodes[i];
-		}
-	}
+	~ConditionGraph() {}
 
-	Node*& new_node(const Node::TYPE& type) {
-		return nodes.emplace_back(new Node(type));
+	Node* new_node(const Node::TYPE& type) {
+		nodeStorage.emplace_back(type);
+		return &nodeStorage.back();
 	}
 
 	static Node::TYPE get_node_type(const Bytecode::BC_OP& instruction, const bool& swapped) {
@@ -160,8 +161,8 @@ struct ConditionGraph {
 			&& type != Node::UNCONDITIONAL_TRUE
 			&& type != Node::UNCONDITIONAL_FALSE;
 		conditionNodes.emplace_back(node);
-		targetLabels[node] = targetLabel;
-		alternateTargets[node] = hasAlternateTarget;
+		node->targetLabel = targetLabel;
+		node->alternateTarget = hasAlternateTarget;
 	}
 
 	bool link_nodes() {
@@ -178,20 +179,21 @@ struct ConditionGraph {
 			conditionNodes.emplace_back(falseTarget);
 			break;
 		}
-		std::unordered_map<uint32_t, Node*> labelToNode;
+		thread_local std::unordered_map<uint32_t, Node*> labelToNode;
+		labelToNode.clear();
+		labelToNode.reserve(conditionNodes.size() * 2);
 		for (auto node : conditionNodes) {
 			if (node->nodeLabel != INVALID_ID) labelToNode[node->nodeLabel] = node;
 		}
-		// resolve taken (jump) successors without writing edges yet
+		// resolve taken (jump) successors without writing edges
 		for (uint32_t i = 0; i < addedCount; i++) {
 			Node* node = conditionNodes[i];
-			auto it = targetLabels.find(node);
-			if (it == targetLabels.end() || it->second == INVALID_ID) continue;
-			auto labelIt = labelToNode.find(it->second);
+			if (node->targetLabel == INVALID_ID) continue;
+			auto labelIt = labelToNode.find(node->targetLabel);
 			if (labelIt == labelToNode.end()) return false;
 			node->takenSucc = labelIt->second;
 		}
-		// orient polarity relative to exits (port of ConditionBuilder::fix_return_nodes)
+		// port of ConditionBuilder::fix_return_nodes
 		for (uint32_t i = 0; i < addedCount; i++) {
 			Node* node = conditionNodes[i];
 			if (!node->takenSucc) continue;
@@ -205,7 +207,7 @@ struct ConditionGraph {
 			}
 		}
 		
-		// port of ConditionBuilder::fix_return_nodes preference for intermediate targets.
+		// port of ConditionBuilder::fix_return_nodes
 		for (uint32_t i = 0; i < addedCount; i++) {
 			Node* node = conditionNodes[i];
 
@@ -216,14 +218,14 @@ struct ConditionGraph {
 			}
 		}
 		
-		// port of ConditionBuilder::build_boolean_logic alternate-target rules
+		// port of ConditionBuilder::build_boolean_logic
 		for (uint32_t i = 0; i + 1 < addedCount; i++) {
 			Node* node = conditionNodes[i];
-			if (alternateTargets[node]
+			if (node->alternateTarget
 				&& ((i && conditionNodes[i - 1]->takenSucc == endAssignment)
 					|| conditionNodes[i + 1] == endAssignment))
 				node->takenSucc = endAssignment;
-			if (node->takenSucc == endAssignment && i && alternateTargets[conditionNodes[i - 1]])
+			if (node->takenSucc == endAssignment && i && conditionNodes[i - 1]->alternateTarget)
 				conditionNodes[i - 1]->takenSucc = endAssignment;
 		}
 	
@@ -286,42 +288,65 @@ struct ConditionGraph {
 
 	bool topological_sort() {
 		topo.clear();
-		std::vector<Node*> visiting;
-		std::unordered_set<Node*> visited;
+
 		for (auto node : conditionNodes) {
 			node->topoIndex = -1;
+			node->visit = 0;
 		}
+
 		for (auto node : conditionNodes) {
-			if (node->isExit() || node->removed || node->topoIndex >= 0) continue;
-			if (!dfs_topo(node, visiting, visited)) return false;
+			if (node->isExit() || node->removed || node->visit == 2) {
+				continue;
+			}
+
+			if (!dfs_topo(node)) {
+				return false;
+			}
 		}
+
 		std::reverse(topo.begin(), topo.end());
+
 		for (uint32_t i = 0; i < topo.size(); i++) {
 			topo[i]->topoIndex = static_cast<int>(i);
 		}
+
 		return true;
 	}
 
-	bool dfs_topo(Node* node, std::vector<Node*>& visiting, std::unordered_set<Node*>& visited) {
-		if (visited.count(node)) return true;
-		visiting.push_back(node);
-		if (node->trueSucc && !node->trueSucc->isExit() && !node->trueSucc->removed) {
-			if (is_on_path(visiting, node->trueSucc)) {
-				visiting.pop_back();
+	bool dfs_topo(Node* node) {
+		if (node->visit == 2) {
+			return true;
+		}
+
+		if (node->visit == 1) {
+			return false;
+		}
+
+		node->visit = 1;
+
+		if (
+			node->trueSucc &&
+			!node->trueSucc->isExit() &&
+			!node->trueSucc->removed
+		) {
+			if (!dfs_topo(node->trueSucc)) {
 				return false;
 			}
-			if (!dfs_topo(node->trueSucc, visiting, visited)) return false;
 		}
-		if (node->falseSucc && !node->falseSucc->isExit() && !node->falseSucc->removed) {
-			if (is_on_path(visiting, node->falseSucc)) {
-				visiting.pop_back();
+
+		if (
+			node->falseSucc &&
+			!node->falseSucc->isExit() &&
+			!node->falseSucc->removed
+		) {
+			if (!dfs_topo(node->falseSucc)) {
 				return false;
 			}
-			if (!dfs_topo(node->falseSucc, visiting, visited)) return false;
 		}
-		visiting.pop_back();
-		visited.insert(node);
+
+		node->visit = 2;
 		topo.push_back(node);
+
 		return true;
 	}
 
@@ -406,7 +431,8 @@ struct ConditionGraph {
 
 	void deduplicate_preds(Node* node) {
 		if (!node) return;
-		std::unordered_set<Node*> seen;
+		thread_local std::unordered_set<Node*> seen;
+		seen.clear();
 		for (auto it = node->preds.begin(); it != node->preds.end();) {
 			if (seen.count(it->from)) it = node->preds.erase(it);
 			else {
@@ -961,7 +987,7 @@ struct ConditionGraph {
 
 		if (activeCount != 1) {
 			if (!reduce_generic()) {
-				print("ConditionGraph failure: reduce_generic failed on active graph");
+				log("ConditionGraph failure: reduce_generic failed on active graph");
 				return false;
 			}
 		}
@@ -1109,24 +1135,24 @@ struct ConditionGraph {
 
 	Expression* build_condition() {
 		if (!link_nodes()) {
-			print("ConditionGraph failure: link_nodes");
+			log("ConditionGraph failure: link_nodes");
 			return nullptr;
 		}
 		if (!topological_sort()) {
-			print("ConditionGraph failure: topological_sort");
+			log("ConditionGraph failure: topological_sort");
 			return nullptr;
 		}
 		if (!make_monochromatic()) {
 			reset_all_twists();
 		}
 		if (!reduce_patterns()) {
-			print("ConditionGraph failure: reduce_patterns ("
+			log("ConditionGraph failure: reduce_patterns ("
 				+ std::to_string(conditionNodes.size())
 				+ " nodes left)");
 			return nullptr;
 		}
 		if (conditionNodes.empty()) {
-			print("ConditionGraph failure: no remaining nodes after reduction");
+			log("ConditionGraph failure: no remaining nodes after reduction");
 			return nullptr;
 		}
 		Node* node = conditionNodes.back();
@@ -1140,11 +1166,9 @@ struct ConditionGraph {
 	}
 
 	Ast& ast;
-	std::vector<Node*> nodes;
+	std::deque<Node> nodeStorage;
 	std::vector<Node*> conditionNodes;
 	std::vector<Node*> topo;
-	std::unordered_map<Node*, uint32_t> targetLabels;
-	std::unordered_map<Node*, bool> alternateTargets;
 	Node* endAssignment = nullptr;
 	Node* endTarget = nullptr;
 	Node* trueTarget = nullptr;

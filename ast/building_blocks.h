@@ -9,19 +9,19 @@ enum AST_EXPRESSION {
 	AST_EXPRESSION_UNARY_OPERATION
 };
 
-struct Ast::Expression {
-	Expression(const AST_EXPRESSION& initialType) : type(initialType) {
+struct Expression {
+	Ast* owner = nullptr;
+	AST_EXPRESSION type;
+
+	Expression(Ast* owner_, const AST_EXPRESSION& initialType)
+		: owner(owner_), type(initialType) {
 		initialize_type();
 	}
 
-	~Expression() {
-		delete_type();
-	}
+	~Expression() = default;
 
 	void set_type(const AST_EXPRESSION& newType) {
 		if (type == newType) return;
-
-		delete_type();
 		type = newType;
 		initialize_type();
 	}
@@ -29,7 +29,7 @@ struct Ast::Expression {
 	void initialize_type() {
 		switch (type) {
 		case AST_EXPRESSION_CONSTANT:
-			constant = new Constant();
+			constant = owner->new_constant();
 			break;
 		case AST_EXPRESSION_VARARG:
 			returnCount = 0;
@@ -38,59 +38,22 @@ struct Ast::Expression {
 			function = nullptr;
 			break;
 		case AST_EXPRESSION_VARIABLE:
-			variable = new Variable();
+			variable = owner->new_variable();
 			break;
 		case AST_EXPRESSION_FUNCTION_CALL:
-			functionCall = new FunctionCall();
+			functionCall = owner->new_function_call();
 			break;
 		case AST_EXPRESSION_TABLE:
-			table = new Table();
+			table = owner->new_table();
 			break;
 		case AST_EXPRESSION_BINARY_OPERATION:
-			binaryOperation = new BinaryOperation();
+			binaryOperation = owner->new_binary_operation();
 			break;
 		case AST_EXPRESSION_UNARY_OPERATION:
-			unaryOperation = new UnaryOperation();
+			unaryOperation = owner->new_unary_operation();
 			break;
 		}
 	}
-
-	void delete_type() {
-		switch (type) {
-		case AST_EXPRESSION_CONSTANT:
-			delete constant;
-			constant = nullptr;
-			break;
-		case AST_EXPRESSION_FUNCTION:
-			function = nullptr;
-			break;
-		case AST_EXPRESSION_VARIABLE:
-			delete variable;
-			variable = nullptr;
-			break;
-		case AST_EXPRESSION_FUNCTION_CALL:
-			delete functionCall;
-			functionCall = nullptr;
-			break;
-		case AST_EXPRESSION_TABLE:
-			delete table;
-			table = nullptr;
-			break;
-		case AST_EXPRESSION_BINARY_OPERATION:
-			delete binaryOperation;
-			binaryOperation = nullptr;
-			break;
-		case AST_EXPRESSION_UNARY_OPERATION:
-			delete unaryOperation;
-			unaryOperation = nullptr;
-			break;
-		case AST_EXPRESSION_VARARG:
-			returnCount = 0;
-			break;
-		}
-	}
-
-	AST_EXPRESSION type;
 
 	union {
 		Constant* constant = nullptr;
@@ -115,8 +78,8 @@ enum AST_CONSTANT {
 	AST_CONSTANT_STRING
 };
 
-struct Ast::Constant {
-	AST_CONSTANT type;
+struct Constant {
+	AST_CONSTANT type = AST_CONSTANT_NIL;
 
 	union {
 		double number;
@@ -135,8 +98,8 @@ enum AST_VARIABLE {
 	AST_VARIABLE_TABLE_INDEX
 };
 
-struct Ast::Variable {
-	AST_VARIABLE type;
+struct Variable {
+	AST_VARIABLE type = AST_VARIABLE_SLOT;
 	uint8_t slot = 0;
 	SlotScope** slotScope = nullptr;
 	std::string name;
@@ -146,7 +109,7 @@ struct Ast::Variable {
 	uint32_t multresIndex = 0;
 };
 
-struct Ast::FunctionCall {
+struct FunctionCall {
 	Expression* function = nullptr;
 	std::vector<Expression*> arguments;
 	Expression* multresArgument = nullptr;
@@ -154,7 +117,7 @@ struct Ast::FunctionCall {
 	uint8_t returnCount = 0;
 };
 
-struct Ast::Table {
+struct Table {
 	struct Field {
 		Expression* key = nullptr;
 		Expression* value = nullptr;
@@ -188,8 +151,8 @@ enum AST_BINARY_OPERATION {
 	AST_BINARY_OR
 };
 
-struct Ast::BinaryOperation {
-	AST_BINARY_OPERATION type;
+struct BinaryOperation {
+	AST_BINARY_OPERATION type = AST_BINARY_ADDITION;
 	Expression* leftOperand = nullptr;
 	Expression* rightOperand = nullptr;
 };
@@ -200,8 +163,8 @@ enum AST_UNARY_OPERATION {
 	AST_UNARY_LENGTH
 };
 
-struct Ast::UnaryOperation {
-	AST_UNARY_OPERATION type;
+struct UnaryOperation {
+	AST_UNARY_OPERATION type = AST_UNARY_MINUS;
 	Expression* operand = nullptr;
 };
 
@@ -226,11 +189,12 @@ enum AST_STATEMENT {
 	AST_STATEMENT_LABEL
 };
 
-struct Ast::Statement {
+struct Statement {
 	Statement(const AST_STATEMENT& type) : type(type) {}
 
 	AST_STATEMENT type;
-
+	bool removed = false;
+	
 	struct {
 		Bytecode::BC_OP type = Bytecode::BC_OP_INVALID;
 		uint8_t a = 0;
@@ -253,11 +217,16 @@ struct Ast::Statement {
 
 	struct {
 		void register_slots(Expression*& expression) {
+			if (openSlots.empty()) {
+				openSlots.reserve(4);
+			}
 			openSlots.emplace_back(&expression);
 		}
-
 		template <typename... Expressions>
 		void register_slots(Expression*& expression, Expressions*&... expressions) {
+			if (openSlots.empty()) {
+				openSlots.reserve(4);
+			}
 			openSlots.emplace_back(&expression);
 			return register_slots(expressions...);
 		}

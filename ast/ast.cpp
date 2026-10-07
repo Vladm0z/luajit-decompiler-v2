@@ -2,30 +2,51 @@
 
 Ast::Ast(const Bytecode& bytecode, const bool& ignoreDebugInfo, const bool& minimizeDiffs) : bytecode(bytecode), ignoreDebugInfo(ignoreDebugInfo), minimizeDiffs(minimizeDiffs) {}
 
-Ast::~Ast() {
-	for (uint32_t i = statements.size(); i--;) {
-		delete statements[i];
-	}
+Ast::~Ast() {}
 
-	for (uint32_t i = functions.size(); i--;) {
-		delete functions[i];
-	}
-
-	for (uint32_t i = expressions.size(); i--;) {
-		delete expressions[i];
-	}
+Ast::Function* Ast::new_function(const Bytecode::Prototype& prototype, const uint32_t& level) {
+    functions.emplace_back(prototype, level, ignoreDebugInfo);
+    return &functions.back();
 }
 
-Ast::Function*& Ast::new_function(const Bytecode::Prototype& prototype, const uint32_t& level) {
-	return functions.emplace_back(new Function(prototype, level, ignoreDebugInfo));
+Ast::Statement* Ast::new_statement(const AST_STATEMENT& type) {
+    statements.emplace_back(type);
+    return &statements.back();
 }
 
-Ast::Statement*& Ast::new_statement(const AST_STATEMENT& type) {
-	return statements.emplace_back(new Statement(type));
+Ast::Expression* Ast::new_expression(const AST_EXPRESSION& type) {
+    expressions.emplace_back(this, type);
+    return &expressions.back();
 }
 
-Ast::Expression*& Ast::new_expression(const AST_EXPRESSION& type) {
-	return expressions.emplace_back(new Expression(type));
+Ast::Constant* Ast::new_constant() {
+    constantPool.emplace_back();
+    return &constantPool.back();
+}
+
+Ast::Variable* Ast::new_variable() {
+    variablePool.emplace_back();
+    return &variablePool.back();
+}
+
+Ast::FunctionCall* Ast::new_function_call() {
+    functionCallPool.emplace_back();
+    return &functionCallPool.back();
+}
+
+Ast::Table* Ast::new_table() {
+    tablePool.emplace_back();
+    return &tablePool.back();
+}
+
+Ast::BinaryOperation* Ast::new_binary_operation() {
+    binaryOperationPool.emplace_back();
+    return &binaryOperationPool.back();
+}
+
+Ast::UnaryOperation* Ast::new_unary_operation() {
+    unaryOperationPool.emplace_back();
+    return &unaryOperationPool.back();
 }
 
 void Ast::operator()() {
@@ -35,9 +56,9 @@ void Ast::operator()() {
 	prototypeDataLeft = bytecode.prototypesTotalSize;
 	uint32_t functionCounter = 0;
 	build_functions(*chunk, functionCounter);
-	functions.shrink_to_fit();
-	statements.shrink_to_fit();
-	expressions.shrink_to_fit();
+	//functions.shrink_to_fit();
+	//statements.shrink_to_fit();
+	//expressions.shrink_to_fit();
 	erase_progress_bar();
 }
 
@@ -198,6 +219,19 @@ void Ast::assign_debug_info(Function& function) {
 	return group_jumps(function);
 }
 
+static void compact_removed_statements(std::vector<Ast::Statement*>& block) {
+    block.erase(
+        std::remove_if(
+            block.begin(),
+            block.end(),
+            [](const Ast::Statement* statement) {
+                return statement->removed;
+            }
+        ),
+        block.end()
+    );
+}
+
 void Ast::group_jumps(Function& function) {
 	for (uint32_t i = function.block.size(); i--;) {
 		switch (function.block[i]->instruction.type) {
@@ -220,7 +254,7 @@ void Ast::group_jumps(Function& function) {
 		case Bytecode::BC_OP_ISF:
 			function.block[i]->type = AST_STATEMENT_CONDITION;
 			function.block[i]->instruction.target = function.block[i + 1]->instruction.target;
-			function.block.erase(function.block.begin() + i + 1);
+			function.block[i + 1]->removed = true;
 			function.slotScopeCollector.add_jump(function.block[i]->instruction.id + 1, function.block[i]->instruction.target);
 			continue;
 		case Bytecode::BC_OP_UCLO:
@@ -232,7 +266,7 @@ void Ast::group_jumps(Function& function) {
 			continue;
 		}
 	}
-
+	compact_removed_statements(function.block);
 	function.labels.shrink_to_fit();
 	uint32_t index;
 
@@ -1425,6 +1459,25 @@ void Ast::build_slot_scopes(Function& function, std::vector<Statement*>& block, 
 }
 
 void Ast::eliminate_slots(Function& function, std::vector<Statement*>& block, BlockInfo* const& previousBlock) {
+	BlockIndexCache blockIdCache;
+	const bool useBlockIdCache = false;
+
+	auto find_block_index = [&](const uint32_t id) -> uint32_t {
+		uint32_t cachedIndex = INVALID_ID;
+
+		if (useBlockIdCache && blockIdCache.try_find(block, id, cachedIndex)) {
+			return cachedIndex;
+		}
+
+		return get_block_index_from_id(block, id);
+	};
+
+	auto invalidate_block_index = [&]() {
+		if (useBlockIdCache) {
+			blockIdCache.invalidate();
+		}
+	};
+
 	static bool (* const has_self_reference)(const uint8_t&, Expression* const&) = [](const uint8_t& targetSlot, Expression* const& expression)->bool {
 		switch (expression->type) {
 		case AST_EXPRESSION_FUNCTION:
@@ -1496,12 +1549,16 @@ void Ast::eliminate_slots(Function& function, std::vector<Statement*>& block, Bl
 				switch (block[i - 1]->type) {
 				case AST_STATEMENT_ASSIGNMENT:
 					if (block[i - 1]->assignment.variables.front().slot <= block[i]->assignment.expressions[block[i]->assignment.openSlots.size() - 1]->variable->slot) break;
+					compact_removed_statements(block);
 					assert(block[i - 1]->assignment.variables.size() == 1 && !(*block[i - 1]->assignment.variables.back().slotScope)->usages, "Invalid expression list assignment", bytecode.filePath, DEBUG_INFO);
 				case AST_STATEMENT_FUNCTION_CALL:
 					block[i]->assignment.expressions.emplace(block[i]->assignment.expressions.begin() + block[i]->assignment.openSlots.size(), block[i - 1]->assignment.expressions.back());
+					compact_removed_statements(block);
 					block[i]->instruction.label = block[i - 1]->instruction.label;
+					compact_removed_statements(block);
 					i--;
 					block.erase(block.begin() + i);
+					compact_removed_statements(block);
 					continue;
 				}
 
@@ -1512,23 +1569,30 @@ void Ast::eliminate_slots(Function& function, std::vector<Statement*>& block, Bl
 
 					while (true) {
 						function.slotScopeCollector.remove_scope(block[i]->assignment.expressions.back()->variable->slot, block[i]->assignment.expressions.back()->variable->slotScope);
+						compact_removed_statements(block);
 						block[i]->assignment.openSlots.pop_back();
+						compact_removed_statements(block);
 
 						if (block[i]->assignment.expressions.back()->variable->slot != block[i - 1]->assignment.variables.front().slot) {
 							block[i]->assignment.expressions.pop_back();
+							compact_removed_statements(block);
 							continue;
 						}
 
 						block[i]->assignment.expressions.back() = block[i - 1]->assignment.expressions.back();
+						compact_removed_statements(block);
 						block[i]->instruction.label = block[i - 1]->instruction.label;
+						compact_removed_statements(block);
 						i--;
 						block.erase(block.begin() + i);
+						compact_removed_statements(block);
 						break;
 					}
 				}
 
 				for (uint32_t j = block[i]->assignment.openSlots.size(); j--;) {
 					block[i]->assignment.openSlots[j] = &block[i]->assignment.expressions[j];
+					compact_removed_statements(block);
 				}
 
 				break;
@@ -1556,7 +1620,9 @@ void Ast::eliminate_slots(Function& function, std::vector<Statement*>& block, Bl
 					&& (*block[i - 2]->assignment.variables.back().slotScope)->usages == 1
 					&& block[i - 2]->assignment.variables.back().slot == block[i]->assignment.expressions.back()->binaryOperation->rightOperand->variable->slot) {
 					block[i]->assignment.openSlots[0] = &block[i]->assignment.expressions.back()->binaryOperation->rightOperand;
+					compact_removed_statements(block);
 					block[i]->assignment.openSlots[1] = &block[i]->assignment.expressions.back()->binaryOperation->leftOperand;
+					compact_removed_statements(block);
 				}
 
 				break;
@@ -1584,7 +1650,9 @@ void Ast::eliminate_slots(Function& function, std::vector<Statement*>& block, Bl
 					&& block[i - 3]->assignment.variables.back().slot == block[i]->assignment.variables.back().table->variable->slot
 					&& !block[i - 3]->assignment.expressions.back()->table->multresField) {
 					block[i]->assignment.openSlots[0] = &block[i]->assignment.expressions.back();
+					compact_removed_statements(block);
 					block[i]->assignment.openSlots[1] = &block[i]->assignment.variables.back().tableIndex;
+					compact_removed_statements(block);
 				}
 
 				break;
@@ -1608,7 +1676,9 @@ void Ast::eliminate_slots(Function& function, std::vector<Statement*>& block, Bl
 			block[i]->instruction.label = block[i - 1]->instruction.label;
 			i--;
 			function.slotScopeCollector.remove_scope(block[i]->assignment.variables.back().slot, block[i]->assignment.variables.back().slotScope);
+			compact_removed_statements(block);
 			block.erase(block.begin() + i);
+			compact_removed_statements(block);
 		} else {
 			for (uint8_t j = block[i]->assignment.openSlots.size();
 				j--
@@ -1639,19 +1709,27 @@ void Ast::eliminate_slots(Function& function, std::vector<Statement*>& block, Bl
 					&& block[i - 2]->assignment.expressions.back()->variable->slot == block[i - 1]->assignment.expressions.back()->variable->table->variable->slot) {
 					if (block[i]->type == AST_STATEMENT_RETURN) {
 						block[i]->assignment.multresReturn->functionCall->isMethod = true;
+						compact_removed_statements(block);
 						block[i]->assignment.multresReturn->functionCall->arguments.erase(block[i]->assignment.multresReturn->functionCall->arguments.begin());
+						compact_removed_statements(block);
 					} else {
 						block[i]->assignment.expressions.back()->functionCall->isMethod = true;
+						compact_removed_statements(block);
 						block[i]->assignment.expressions.back()->functionCall->arguments.erase(block[i]->assignment.expressions.back()->functionCall->arguments.begin());
+						compact_removed_statements(block);
 					}
 
 					block[i]->assignment.openSlots.erase(block[i]->assignment.openSlots.begin() + j);
+					compact_removed_statements(block);
 					block[i]->assignment.openSlots.emplace(block[i]->assignment.openSlots.begin(), &block[i - 1]->assignment.expressions.back()->variable->table);
+					compact_removed_statements(block);
 					function.slotScopeCollector.remove_scope(block[i - 2]->assignment.variables.back().slot, block[i - 2]->assignment.variables.back().slotScope);
 					block[i - 1]->instruction.label = block[i - 2]->instruction.label;
+					compact_removed_statements(block);
 					(*block[i - 2]->assignment.expressions.back()->variable->slotScope)->usages--;
 					i--;
 					block.erase(block.begin() + i - 1);
+					compact_removed_statements(block);
 				}
 
 				if (block[i - 1]->assignment.variables.back().slot != (*block[i]->assignment.openSlots[j])->variable->slot) continue;
@@ -1671,6 +1749,7 @@ void Ast::eliminate_slots(Function& function, std::vector<Statement*>& block, Bl
 				block[i]->instruction.label = block[i - 1]->instruction.label;
 				i--;
 				block.erase(block.begin() + i);
+				compact_removed_statements(block);
 			}
 		}
 
@@ -1706,7 +1785,7 @@ void Ast::eliminate_slots(Function& function, std::vector<Statement*>& block, Bl
 									|| function.labels[extendedTargetLabel].target >= function.labels[targetLabel].jumpIds.front()))
 							|| has_self_reference(block[i]->assignment.variables.back().slot, block[i]->assignment.expressions.back()))
 							break;
-						index = get_block_index_from_id(block, function.labels[targetLabel].jumpIds.front() - 1);
+						index = find_block_index(function.labels[targetLabel].jumpIds.front() - 1);
 						if (index == INVALID_ID) break;
 
 						switch (block[index]->type) {
@@ -1778,7 +1857,7 @@ void Ast::eliminate_slots(Function& function, std::vector<Statement*>& block, Bl
 
 								if (index == i - 2 && !function.is_valid_label(block[i]->instruction.label)) {
 									if (function.labels[block[i - 2]->instruction.label].jumpIds.front() > block[i - 2]->instruction.id) break;
-									index = get_block_index_from_id(block, function.labels[block[i - 2]->instruction.label].jumpIds.front() - 1);
+									index = find_block_index(function.labels[block[i - 2]->instruction.label].jumpIds.front() - 1);
 
 									if (index == INVALID_ID) {
 										index = i - 2;
@@ -1799,7 +1878,7 @@ void Ast::eliminate_slots(Function& function, std::vector<Statement*>& block, Bl
 
 								if (function.is_valid_label(block[i]->instruction.label)) {
 									for (uint32_t j = function.labels[block[i]->instruction.label].jumpIds.size(); j--;) {
-										targetIndex = get_block_index_from_id(block, function.labels[block[i]->instruction.label].jumpIds[j] - 1);
+										targetIndex = find_block_index(function.labels[block[i]->instruction.label].jumpIds[j] - 1);
 
 										if (targetIndex == INVALID_ID
 											|| block[targetIndex]->type != AST_STATEMENT_CONDITION
@@ -1817,7 +1896,7 @@ void Ast::eliminate_slots(Function& function, std::vector<Statement*>& block, Bl
 
 								if (hasBoolConstruct && function.is_valid_label(block[i - 2]->instruction.label)) {
 									for (uint32_t j = function.labels[block[i - 2]->instruction.label].jumpIds.size(); j--;) {
-										targetIndex = get_block_index_from_id(block, function.labels[block[i - 2]->instruction.label].jumpIds[j] - 1);
+										targetIndex = find_block_index(function.labels[block[i - 2]->instruction.label].jumpIds[j] - 1);
 
 										if (targetIndex == INVALID_ID || block[targetIndex]->type != AST_STATEMENT_CONDITION) {
 											index = INVALID_ID;
@@ -1963,6 +2042,7 @@ void Ast::eliminate_slots(Function& function, std::vector<Statement*>& block, Bl
 								block[i]->instruction.label = block[index]->instruction.label;
 								block[i]->assignment.isTableConstructor = false;
 								block.erase(block.begin() + index, block.begin() + i);
+								compact_removed_statements(block);
 								i = index;
 							}
 						}
@@ -2012,6 +2092,7 @@ void Ast::eliminate_slots(Function& function, std::vector<Statement*>& block, Bl
 
 							(*block[i - 1]->assignment.variables.back().slotScope)->usages--;
 							block.erase(block.begin() + i);
+							compact_removed_statements(block);
 							i -= 2;
 							break;
 						}
@@ -2022,6 +2103,7 @@ void Ast::eliminate_slots(Function& function, std::vector<Statement*>& block, Bl
 							block[i]->instruction.label = block[i - 1]->instruction.label;
 							i--;
 							block.erase(block.begin() + i);
+							compact_removed_statements(block);
 							break;
 						}
 					}
@@ -2041,6 +2123,25 @@ void Ast::eliminate_conditions(Function& function, std::vector<Statement*>& bloc
 	std::vector<Expression*> expressions(1);
 	uint32_t index, targetIndex, previousValidIndex, assignmentIndex, targetLabel, extendedTargetLabel;
 	bool hasBoolConstruct, hasEndAssignment;
+	
+	BlockIndexCache blockIdCache;
+	const bool useBlockIdCache = false;
+
+	auto find_block_index = [&](const uint32_t id) -> uint32_t {
+		uint32_t cachedIndex = INVALID_ID;
+
+		if (useBlockIdCache && blockIdCache.try_find(block, id, cachedIndex)) {
+			return cachedIndex;
+		}
+
+		return get_block_index_from_id(block, id);
+	};
+
+	auto invalidate_block_index = [&]() {
+		if (useBlockIdCache) {
+			blockIdCache.invalidate();
+		}
+	};
 
 	for (uint32_t i = block.size(); i--;) {
 		if (block[i]->instruction.id == INVALID_ID) continue;
@@ -2055,7 +2156,7 @@ void Ast::eliminate_conditions(Function& function, std::vector<Statement*>& bloc
 
 			for (uint32_t j = function.labels[targetLabel].jumpIds.size(); j--;) {
 				if (function.labels[targetLabel].jumpIds[j] >= function.labels[targetLabel].target) continue;
-				index = get_block_index_from_id(block, function.labels[targetLabel].jumpIds[j] - 1);
+				index = find_block_index(function.labels[targetLabel].jumpIds[j] - 1);
 				if (index == INVALID_ID) break;
 
 				switch (block[index]->type) {
@@ -2160,7 +2261,7 @@ void Ast::eliminate_conditions(Function& function, std::vector<Statement*>& bloc
 
 				if (function.is_valid_label(block[i]->instruction.label)) {
 					for (uint32_t j = function.labels[block[i]->instruction.label].jumpIds.size(); j--;) {
-						targetIndex = get_block_index_from_id(block, function.labels[block[i]->instruction.label].jumpIds[j] - 1);
+						targetIndex = find_block_index(function.labels[block[i]->instruction.label].jumpIds[j] - 1);
 
 						if (targetIndex == INVALID_ID
 							|| block[targetIndex]->type != AST_STATEMENT_CONDITION
@@ -2204,12 +2305,12 @@ void Ast::eliminate_conditions(Function& function, std::vector<Statement*>& bloc
 			if (function.labels[targetLabel].jumpIds[j] > block[i]->instruction.id) continue;
 
 			if (function.labels[targetLabel].jumpIds[j] < block[index]->instruction.id) {
-				index = get_block_index_from_id(block, function.labels[targetLabel].jumpIds[j] - 1);
+				index = find_block_index(function.labels[targetLabel].jumpIds[j] - 1);
 
 				if (hasBoolConstruct
 					&& index == i - 2
 					&& !function.is_valid_label(block[i]->instruction.label)) {
-					index = get_block_index_from_id(block, function.labels[block[i - 2]->instruction.label].jumpIds.front() - 1);
+					index = find_block_index(function.labels[block[i - 2]->instruction.label].jumpIds.front() - 1);
 					if (index == INVALID_ID) index = i - 2;
 				}
 			}
@@ -2380,6 +2481,7 @@ void Ast::eliminate_conditions(Function& function, std::vector<Statement*>& bloc
 		block[i]->instruction.label = block[index]->instruction.label;
 		if ((*block[i]->assignment.variables.back().slotScope)->scopeBegin >= block[index]->instruction.id) block[i]->assignment.forwardDeclaration = true;
 		block.erase(block.begin() + index, block.begin() + i);
+		invalidate_block_index();
 		i = index;
 	}
 
@@ -2464,6 +2566,7 @@ void Ast::eliminate_conditions(Function& function, std::vector<Statement*>& bloc
 				function.add_jump(block[i]->instruction.id, block[i]->instruction.target);
 				block[i]->instruction.label = block[index]->instruction.label;
 				block.erase(block.begin() + index, block.begin() + i);
+				invalidate_block_index();
 				i = index;
 			}
 
@@ -2486,9 +2589,11 @@ void Ast::eliminate_conditions(Function& function, std::vector<Statement*>& bloc
 				block[i]->instruction.id = block[i + 1]->instruction.id;
 				block[i + 1]->instruction.id++;
 				block[i]->instruction.target = block[i + 1]->instruction.id;
+				invalidate_block_index();
 				function.add_jump(block[i]->instruction.id, block[i]->instruction.target);
 				function.add_jump(block[i + 1]->instruction.id, block[i + 1]->instruction.target);
 				block[i + 1]->instruction.label = function.get_label_from_id(block[i + 1]->instruction.id);
+				invalidate_block_index();
 			}
 
 			continue;

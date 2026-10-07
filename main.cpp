@@ -10,10 +10,15 @@ struct Error {
 
 #include "parallel_decompiler.h"
 
-bool g_isParallelMode = false;
+std::atomic<bool> g_isParallelMode{false};
 std::mutex g_print_mutex;
 std::atomic<uint32_t> g_filesProcessed{0};
 std::atomic<uint32_t> g_filesFailed{0};
+std::atomic<uint64_t> g_nsBytecode{0};
+std::atomic<uint64_t> g_nsAst{0};
+std::atomic<uint64_t> g_nsLua{0};
+std::atomic<uint64_t> g_nsTotal{0};
+std::atomic<uint32_t> g_slowFiles{0};
 
 static const HANDLE CONSOLE_OUTPUT = GetStdHandle(STD_OUTPUT_HANDLE);
 //static const HANDLE CONSOLE_INPUT = GetStdHandle(STD_INPUT_HANDLE);
@@ -262,8 +267,10 @@ static void collect_files(const Directory& directory, const std::string& inputBa
         outputFile += ".lua";
         outputFile = outputBase + directory.path + outputFile;
         
-        inputPaths.push_back(inputFile);
-        outputPaths.push_back(outputFile);
+		if (looks_like_luajit_bytecode(inputFile)) {
+			inputPaths.push_back(inputFile);
+			outputPaths.push_back(outputFile);
+		}
     }
     for (const auto& folder : directory.folders) {
         collect_files(folder, inputBase, outputBase, inputPaths, outputPaths);
@@ -420,9 +427,9 @@ int main(int argc, char* argv[]) {
 		};
 
 		try {
-			g_isParallelMode = true;
+			g_isParallelMode.store(true);
 			decompile_all_parallel(inputPaths, outputPaths, config);
-			g_isParallelMode = false;
+			g_isParallelMode.store(false);
 		} catch (...) {
 			throw;
 		}
@@ -442,7 +449,7 @@ void print(const std::string& message) {
 }
 
 void print_progress_bar(const double& progress, const double& total) {
-    if (g_isParallelMode) return; 
+    if (g_isParallelMode.load()) return;
 	static char PROGRESS_BAR[] = "\r[====================]";
 
 	double ratio = total > 0.0 ? progress / total : 1.0;
@@ -460,7 +467,7 @@ void print_progress_bar(const double& progress, const double& total) {
 }
 
 void erase_progress_bar() {
-    if (g_isParallelMode) return;
+    if (g_isParallelMode.load()) return;
 	static constexpr char PROGRESS_BAR_ERASER[] = "\r                      \r";
 
 	if (!isProgressBarActive) return;

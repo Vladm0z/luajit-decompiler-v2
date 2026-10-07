@@ -1,5 +1,3 @@
-#include <unordered_set>
-
 struct Local {
 	std::unordered_set<std::string> usedNames;
 	std::vector<std::string> names;
@@ -41,13 +39,19 @@ struct Function {
 		}
 
 		slotScopeCollector.previousId = prototype.instructions.size();
+		labels.reserve(32);
+		upvalues.reserve(prototype.upvalues.size());
+		parameterNames.reserve(prototype.header.parameters);
+		usedGlobals.reserve(16);
+		usedNames.reserve(64);
+		childFunctions.reserve(8);
+		block.reserve(prototype.instructions.size());
+
+		slotScopeCollector.upvalueInfos.reserve(prototype.instructions.size() / 8 + 8);
+		slotScopeCollector.upvalueScopes.reserve(prototype.instructions.size() / 8 + 8);
 	}
 
-	~Function() {
-		for (uint32_t i = slotScopeCollector.slotScopes.size(); i--;) {
-			delete slotScopeCollector.slotScopes[i];
-		}
-	}
+	~Function() {}
 
 	const Bytecode::Constant& get_constant(const uint16_t& index) const {
 		return prototype.constants[prototype.constants.size() - 1 - index];
@@ -58,45 +62,65 @@ struct Function {
 	}
 
 	void add_jump(const uint32_t& id, const uint32_t& target) {
-		for (uint32_t i = 0; i < labels.size(); i++) {
-			if (target > labels[i].target) continue;
-
-			if (target != labels[i].target) {
-				labels.emplace(labels.begin() + i);
-				labels[i].target = target;
+		auto it = std::lower_bound(
+			labels.begin(),
+			labels.end(),
+			target,
+			[](const Label& label, const uint32_t& value) {
+				return label.target < value;
 			}
+		);
 
-			for (uint32_t j = 0; j < labels[i].jumpIds.size(); j++) {
-				if (id > labels[i].jumpIds[j]) continue;
-				if (id < labels[i].jumpIds[j]) labels[i].jumpIds.emplace(labels[i].jumpIds.begin() + j, id);
-				return;
-			}
-
-			labels[i].jumpIds.emplace_back(id);
-			return;
+		if (it == labels.end() || it->target != target) {
+			Label label;
+			label.target = target;
+			it = labels.insert(it, std::move(label));
 		}
 
-		labels.emplace_back();
-		labels.back().target = target;
-		labels.back().jumpIds.emplace_back(id);
+		auto& jumpIds = it->jumpIds;
+
+		auto idIt = std::lower_bound(jumpIds.begin(), jumpIds.end(), id);
+
+		if (idIt == jumpIds.end() || *idIt != id) {
+			jumpIds.insert(idIt, id);
+		}
 	}
 
 	void remove_jump(const uint32_t& id, const uint32_t& target) {
-		for (uint32_t i = labels.size(); i--;) {
-			if (labels[i].target != target) continue;
-
-			for (uint32_t j = labels[i].jumpIds.size(); j--;) {
-				if (labels[i].jumpIds[j] != id) continue;
-				labels[i].jumpIds.erase(labels[i].jumpIds.begin() + j);
-				return;
+		auto it = std::lower_bound(
+			labels.begin(),
+			labels.end(),
+			target,
+			[](const Label& label, const uint32_t& value) {
+				return label.target < value;
 			}
+		);
+
+		if (it == labels.end() || it->target != target) {
+			return;
+		}
+
+		auto& jumpIds = it->jumpIds;
+
+		auto idIt = std::lower_bound(jumpIds.begin(), jumpIds.end(), id);
+
+		if (idIt != jumpIds.end() && *idIt == id) {
+			jumpIds.erase(idIt);
 		}
 	}
 
 	uint32_t get_label_from_id(const uint32_t& id) {
-		for (uint32_t i = labels.size(); i-- && labels[i].target >= id;) {
-			if (labels[i].target != id) continue;
-			return i;
+		auto it = std::lower_bound(
+			labels.begin(),
+			labels.end(),
+			id,
+			[](const Label& label, const uint32_t& value) {
+				return label.target < value;
+			}
+		);
+
+		if (it != labels.end() && it->target == id) {
+			return static_cast<uint32_t>(it - labels.begin());
 		}
 
 		return INVALID_ID;
@@ -182,7 +206,8 @@ struct Function {
 		};
 
 		SlotScope** new_slot_scope() {
-			return &slotScopes.emplace_back(new SlotScope)->slotScope;
+			slotScopes.emplace_back();
+			return &slotScopes.back().slotScope;
 		}
 
 		uint32_t add_upvalue_info(const uint32_t& id, const UpvalueInfo::TYPE& type) {
@@ -384,7 +409,7 @@ struct Function {
 		std::vector<UpvalueInfo> upvalueInfos;
 		std::vector<UpvalueScope> upvalueScopes;
 		std::vector<SlotInfo> slotInfos;
-		std::vector<SlotScope*> slotScopes;
+		std::deque<SlotScope> slotScopes;
 		uint32_t previousId = INVALID_ID;
 	} slotScopeCollector;
 };

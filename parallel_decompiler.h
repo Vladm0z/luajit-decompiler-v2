@@ -1,15 +1,19 @@
 // parallel_decompiler.h
 #pragma once
-#include <future>
+
+#include <algorithm>
+#include <atomic>
+#include <cstdlib>
+#include <cstring>
+#include <iostream>
+#include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
-#include <string>
-#include <iostream>
-#include <algorithm>
-#include <mutex>
-#include <atomic>
+#include <limits>
+#include <chrono>
 
-struct Error; 
+struct Error;
 
 struct DecompilerConfig {
     bool forceOverwrite;
@@ -21,63 +25,340 @@ struct DecompilerConfig {
 extern std::mutex g_print_mutex;
 extern std::atomic<uint32_t> g_filesProcessed;
 extern std::atomic<uint32_t> g_filesFailed;
+extern std::atomic<uint64_t> g_nsBytecode;
+extern std::atomic<uint64_t> g_nsAst;
+extern std::atomic<uint64_t> g_nsLua;
+extern std::atomic<uint64_t> g_nsTotal;
+extern std::atomic<uint32_t> g_slowFiles;
 extern void print(const std::string& message);
 
-void decompile_file_safe(const std::string& inputPath, const std::string& outputPath, const DecompilerConfig& config) {
-    try {
-        Bytecode bytecode(inputPath);
-        bytecode();
-        Ast ast(bytecode, config.ignoreDebugInfo, config.minimizeDiffs);
-        ast();
-        Lua lua(bytecode, ast, outputPath, config.forceOverwrite, config.minimizeDiffs, config.unrestrictedAscii);
-        lua();
-        
-        g_filesProcessed++;
-    } catch (const Error& error) {
-        g_filesFailed++;
-        std::lock_guard<std::mutex> lock(g_print_mutex);
-        std::cerr << "[Error] " << inputPath << "\n"
-                  << "  Source: " << error.source << ":" << error.line << "\n"
-                  << "  " << error.message << "\n";
-    } catch (const std::exception& e) {
-        g_filesFailed++;
-        std::lock_guard<std::mutex> lock(g_print_mutex);
-        std::cerr << "[Error] " << inputPath << ": " << e.what() << "\n";
-    } catch (...) {
-        g_filesFailed++;
-        std::lock_guard<std::mutex> lock(g_print_mutex);
-        std::cerr << "[Error] " << inputPath << ": Unknown exception/Assertion\n";
+namespace {
+
+inline unsigned int resolve_thread_count(size_t fileCount) {
+    unsigned int hw = std::thread::hardware_concurrency();
+    if (hw == 0) hw = 1;
+
+    char* env = nullptr;
+    size_t envSize = 0;
+
+    errno_t err = _dupenv_s(&env, &envSize, "LJD_MAX_THREADS");
+
+    if (err == 0 && env != nullptr) {
+        char* end = nullptr;
+        unsigned long parsed = std::strtoul(env, &end, 10);
+
+        if (
+            end != env &&
+            parsed > 0 &&
+            parsed <= static_cast<unsigned long>((std::numeric_limits<unsigned int>::max)())
+        ) {
+            hw = static_cast<unsigned int>(parsed);
+        }
+
+        std::free(env);
     }
+
+    size_t threadCount = static_cast<size_t>(hw);
+
+    if (threadCount > fileCount) {
+        threadCount = fileCount;
+    }
+
+    if (threadCount == 0) {
+        threadCount = 1;
+    }
+
+    return static_cast<unsigned int>(threadCount);
 }
 
-void decompile_all_parallel(const std::vector<std::string>& inputPaths, const std::vector<std::string>& outputPaths, const DecompilerConfig& config) {
-    unsigned int num_threads = std::thread::hardware_concurrency();
-    if (num_threads == 0) num_threads = 4;
+inline size_t resolve_batch_size(size_t fileCount, unsigned int threadCount) {
+    size_t targetBatches = static_cast<size_t>(threadCount) * 6;
+
+    if (targetBatches == 0) {
+        targetBatches = 1;
+    }
+
+    size_t batch = (fileCount + targetBatches - 1) / targetBatches;
+
+    if (batch < 1) {
+        batch = 1;
+    }
+
+    if (batch > 32) {
+		batch = 32;
+	}
+
+    return batch;
+}
+
+}
+
+inline bool looks_like_luajit_bytecode(const std::string& path) {
+    HANDLE file = CreateFileA(
+        path.c_str(),
+        GENERIC_READ,
+        FILE_SHARE_READ,
+        NULL,
+        OPEN_EXISTING,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL
+    );
+
+    if (file == INVALID_HANDLE_VALUE) {
+        return false;
+    }
+
+    uint8_t buffer[64];
+    DWORD bytesRead = 0;
+
+    BOOL ok = ReadFile(
+        file,
+        buffer,
+        sizeof(buffer),
+        &bytesRead,
+        NULL
+    );
+
+    CloseHandle(file);
+
+    if (!ok || bytesRead < 3) {
+        return false;
+    }
+
+    for (DWORD i = 0; i + 2 < bytesRead; ++i) {
+        if (
+            buffer[i] == 0x1B &&
+            (
+                (buffer[i + 1] == 'L' && buffer[i + 2] == 'J') ||
+                (buffer[i + 1] == 'F' && buffer[i + 2] == 'S')
+            )
+        ) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+namespace detail {
+
+inline int decompile_seh_filter(unsigned int code) {
+	constexpr unsigned int MSVC_CPP_EXCEPTION = 0xE06D7363u;
+
+	return code == MSVC_CPP_EXCEPTION
+		? EXCEPTION_CONTINUE_SEARCH
+		: EXCEPTION_EXECUTE_HANDLER;
+}
+
+inline void log_seh_failure(const std::string& inputPath, unsigned int code) {
+	std::lock_guard<std::mutex> lock(g_print_mutex);
+	std::cerr
+		<< "[SEH] "
+		<< inputPath
+		<< ": exception code 0x"
+		<< std::hex << code << std::dec
+		<< "\n";
+}
+
+inline void decompile_file_core(
+	const std::string& inputPath,
+	const std::string& outputPath,
+	const DecompilerConfig& config
+) {
+	using Clock = std::chrono::high_resolution_clock;
+
+	const auto t0 = Clock::now();
+
+	Bytecode bytecode(inputPath);
+	bytecode();
+
+	const auto t1 = Clock::now();
+
+	Ast ast(bytecode, config.ignoreDebugInfo, config.minimizeDiffs);
+	ast();
+
+	const auto t2 = Clock::now();
+
+	Lua lua(
+		bytecode,
+		ast,
+		outputPath,
+		config.forceOverwrite,
+		config.minimizeDiffs,
+		config.unrestrictedAscii
+	);
+	lua();
+
+	const auto t3 = Clock::now();
+
+	g_nsBytecode += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+	g_nsAst      += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - t1).count());
+	g_nsLua      += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(t3 - t2).count());
+	g_nsTotal    += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(t3 - t0).count());
+
+	if (std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t0).count() > 5000) {
+		++g_slowFiles;
+	}
+}
+
+inline bool decompile_file_seh(
+	const std::string& inputPath,
+	const std::string& outputPath,
+	const DecompilerConfig& config
+) {
+	__try {
+		detail::decompile_file_core(inputPath, outputPath, config);
+		return true;
+	}
+	__except (detail::decompile_seh_filter(GetExceptionCode())) {
+		const unsigned int code = GetExceptionCode();
+		detail::log_seh_failure(inputPath, code);
+		return false;
+	}
+}
+
+} // namespace detail
+
+inline void decompile_file_safe(
+	const std::string& inputPath,
+	const std::string& outputPath,
+	const DecompilerConfig& config
+) {
+	{
+		std::lock_guard<std::mutex> lock(g_print_mutex);
+		std::cerr << "[Start] " << inputPath << "\n";
+	}
+
+	try {
+		if (!detail::decompile_file_seh(inputPath, outputPath, config)) {
+			++g_filesFailed;
+			return;
+		}
+
+		++g_filesProcessed;
+
+		{
+			std::lock_guard<std::mutex> lock(g_print_mutex);
+			std::cerr << "[Done]  " << inputPath << "\n";
+		}
+	}
+	catch (const Error& error) {
+		++g_filesFailed;
+		std::lock_guard<std::mutex> lock(g_print_mutex);
+		std::cerr
+			<< "[Error] " << inputPath << "\n"
+			<< "  Source: " << error.source << ":" << error.line << "\n"
+			<< "  " << error.message << "\n";
+	}
+	catch (const std::exception& e) {
+		++g_filesFailed;
+		std::lock_guard<std::mutex> lock(g_print_mutex);
+		std::cerr << "[Error] " << inputPath << ": " << e.what() << "\n";
+	}
+	catch (...) {
+		++g_filesFailed;
+		std::lock_guard<std::mutex> lock(g_print_mutex);
+		std::cerr << "[Error] " << inputPath << ": Unknown exception/Assertion\n";
+	}
+}
+
+inline void decompile_all_parallel(
+    const std::vector<std::string>& inputPaths,
+    const std::vector<std::string>& outputPaths,
+    const DecompilerConfig& config
+) {
+    const size_t total = inputPaths.size();
+
+    if (total == 0) {
+        return;
+    }
+
+    if (total == 1) {
+        decompile_file_safe(inputPaths[0], outputPaths[0], config);
+
+        std::lock_guard<std::mutex> lock(g_print_mutex);
+        print(
+            "Decompilation complete. Success: " +
+            std::to_string(g_filesProcessed.load()) +
+            ", Failed: " +
+            std::to_string(g_filesFailed.load())
+        );
+
+        return;
+    }
+
+    const unsigned int threadCount = resolve_thread_count(total);
+    const size_t batchSize = resolve_batch_size(total, threadCount);
 
     {
         std::lock_guard<std::mutex> lock(g_print_mutex);
-        print("Starting parallel decompilation across " + std::to_string(num_threads) + " threads...");
+        print(
+            "Starting parallel decompilation across " +
+            std::to_string(threadCount) +
+            " threads, dynamic batch size " +
+            std::to_string(batchSize) +
+            "..."
+        );
     }
 
-    std::vector<std::future<void>> futures;
-    size_t chunk_size = (inputPaths.size() + num_threads - 1) / num_threads;
+    std::atomic<size_t> nextIndex{0};
 
-    for (unsigned int t = 0; t < num_threads; ++t) {
-        size_t start = t * chunk_size;
-        size_t end = (std::min)(start + chunk_size, inputPaths.size());
-        if (start >= inputPaths.size()) break;
+    std::vector<std::thread> workers;
+    workers.reserve(threadCount);
 
-        futures.push_back(std::async(std::launch::async, [&inputPaths, &outputPaths, &config, start, end]() {
-            for (size_t i = start; i < end; ++i) {
-                decompile_file_safe(inputPaths[i], outputPaths[i], config);
+    for (unsigned int t = 0; t < threadCount; ++t) {
+        workers.emplace_back(
+            [&inputPaths, &outputPaths, &config, &nextIndex, total, batchSize]() {
+                while (true) {
+                    const size_t start = nextIndex.fetch_add(
+                        batchSize,
+                        std::memory_order_relaxed
+                    );
+
+                    if (start >= total) {
+                        break;
+                    }
+
+                    size_t end = start + batchSize;
+
+                    if (end > total) {
+                        end = total;
+                    }
+
+                    for (size_t i = start; i < end; ++i) {
+                        decompile_file_safe(
+                            inputPaths[i],
+                            outputPaths[i],
+                            config
+                        );
+                    }
+                }
             }
-        }));
+        );
     }
 
-    for (auto& f : futures) f.get();
-    
+    for (std::thread& worker : workers) {
+        worker.join();
+    }
+
     {
         std::lock_guard<std::mutex> lock(g_print_mutex);
-        print("Parallel decompilation complete. Success: " + std::to_string(g_filesProcessed.load()) + ", Failed: " + std::to_string(g_filesFailed.load()));
+        print(
+            "Parallel decompilation complete. Success: " +
+            std::to_string(g_filesProcessed.load()) +
+            ", Failed: " +
+            std::to_string(g_filesFailed.load())
+        );
+		print(
+			"Phase time totals -> Bytecode: " +
+			std::to_string(g_nsBytecode.load() / 1000000000ull) +
+			" s, AST: " +
+			std::to_string(g_nsAst.load() / 1000000000ull) +
+			" s, Lua: " +
+			std::to_string(g_nsLua.load() / 1000000000ull) +
+			" s, Total: " +
+			std::to_string(g_nsTotal.load() / 1000000000ull) +
+			" s"
+		);
     }
 }

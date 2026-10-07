@@ -1,4 +1,7 @@
 #include "..\main.h"
+#include <charconv>
+
+thread_local std::string t_writeBuffer;
 
 Lua::Lua(const Bytecode& bytecode, const Ast& ast, const std::string& filePath, const bool& forceOverwrite, const bool& minimizeDiffs, const bool& unrestrictedAscii)
 	: bytecode(bytecode), ast(ast), filePath(filePath), forceOverwrite(forceOverwrite), minimizeDiffs(minimizeDiffs), unrestrictedAscii(unrestrictedAscii) {}
@@ -9,7 +12,15 @@ Lua::~Lua() {
 
 void Lua::operator()() {
 	print_progress_bar();
+	const uint64_t estimatedSourceSize = bytecode.prototypesTotalSize * 3;
+	const size_t reserveSize = static_cast<size_t>(std::clamp<uint64_t>(estimatedSourceSize, 1ull << 20, 8ull << 20));
+	
+	// Reuse string buffer per thread
+	t_writeBuffer.clear();
+	t_writeBuffer.reserve(reserveSize);
+
 	prototypeDataLeft = bytecode.prototypesTotalSize;
+
 	write_header();
 	if (ast.chunk->block.size()) write_block(*ast.chunk, ast.chunk->block);
 	prototypeDataLeft -= ast.chunk->prototype.prototypeSize;
@@ -832,37 +843,22 @@ void Lua::write_function_definition(const Ast::Function& function, const bool& i
 }
 
 void Lua::write_number(const double& number) {
-	static const auto try_string_to_number = [](const std::string& string, const double& number)->bool {
-		try {
-			return std::stod(string) == number;
-		} catch (...) {
-			return false;
-		}
-	};
+    const uint64_t rawDouble = std::bit_cast<uint64_t>(number);
+    if ((rawDouble & DOUBLE_EXPONENT) == DOUBLE_SPECIAL) {
+        write(rawDouble & DOUBLE_SIGN ? "-1e309" : "1e309");
+        return;
+    }
 
-	const uint64_t rawDouble = std::bit_cast<uint64_t>(number);
-
-	if ((rawDouble & DOUBLE_EXPONENT) == DOUBLE_SPECIAL) {
-		write(rawDouble & DOUBLE_SIGN ? "-1e309" : "1e309");
-		return;
-	}
-
-	std::string string;
-	string.resize(std::snprintf(nullptr, 0, "%1.15g", number));
-	std::snprintf(string.data(), string.size() + 1, "%1.15g", number);
-
-	if (!try_string_to_number(string, number)) {
-		string.resize(std::snprintf(nullptr, 0, "%1.16g", number));
-		std::snprintf(string.data(), string.size() + 1, "%1.16g", number);
-
-		if (!try_string_to_number(string, number)) {
-			string.resize(std::snprintf(nullptr, 0, "%1.17g", number));
-			std::snprintf(string.data(), string.size() + 1, "%1.17g", number);
-			assert(try_string_to_number(string, number), "Failed to convert number to valid string", filePath, DEBUG_INFO);
-		}
-	}
-
-	write(string);
+    char buffer[64];
+    auto [ptr, ec] = std::to_chars(buffer, buffer + sizeof(buffer), number, std::chars_format::general);
+    
+    if (ec == std::errc()) {
+        t_writeBuffer.append(buffer, ptr - buffer);
+    } else {
+        // Fallback just in case
+        int len = std::snprintf(buffer, sizeof(buffer), "%1.17g", number);
+        t_writeBuffer.append(buffer, len);
+    }
 }
 
 void Lua::write_string(const std::string& string) {
@@ -881,10 +877,10 @@ void Lua::write_string(const std::string& string) {
 				switch (string[i]) {
 				case '"':
 				case '\\':
-					writeBuffer += '\\';
+					t_writeBuffer += '\\';
 				}
 
-				writeBuffer += string[i];
+				t_writeBuffer += string[i];
 				continue;
 			}
 
@@ -919,8 +915,8 @@ void Lua::write_string(const std::string& string) {
 				if ((value & 0xC0) == 0x80
 					&& value >= 0xC2A0
 					&& value <= 0xDFBF) {
-					writeBuffer += string[i];
-					writeBuffer += string[i + 1];
+					t_writeBuffer += string[i];
+					t_writeBuffer += string[i + 1];
 					i++;
 					continue;
 				}
@@ -936,9 +932,9 @@ void Lua::write_string(const std::string& string) {
 							&& value < 0xEDA080)
 						|| (value > 0xEDBFBF
 							&& value <= 0xEFBFBF))) {
-					writeBuffer += string[i];
-					writeBuffer += string[i + 1];
-					writeBuffer += string[i + 2];
+					t_writeBuffer += string[i];
+					t_writeBuffer += string[i + 1];
+					t_writeBuffer += string[i + 2];
 					i += 2;
 					continue;
 				}
@@ -953,10 +949,10 @@ void Lua::write_string(const std::string& string) {
 				if ((value & 0xC0C0C0) == 0x808080
 					&& value >= 0xF0908080
 					&& value <= 0xF48FBFBF) {
-					writeBuffer += string[i];
-					writeBuffer += string[i + 1];
-					writeBuffer += string[i + 2];
-					writeBuffer += string[i + 3];
+					t_writeBuffer += string[i];
+					t_writeBuffer += string[i + 1];
+					t_writeBuffer += string[i + 2];
+					t_writeBuffer += string[i + 3];
 					i += 3;
 					continue;
 				}
@@ -968,7 +964,7 @@ void Lua::write_string(const std::string& string) {
 			escapeSequence[3 - j] = digit >= 0xA ? 'A' + digit - 0xA : '0' + digit;
 		}
 
-		writeBuffer += escapeSequence;
+		t_writeBuffer += escapeSequence;
 	}
 }
 
@@ -1008,28 +1004,27 @@ uint8_t Lua::get_operator_precedence(const Ast::Expression& expression) {
 	return 8;
 }
 
-void Lua::write(const std::string& string) {
-	writeBuffer += string;
+void Lua::write(std::string_view string) {
+    t_writeBuffer.append(string.data(), string.size());
 }
 
 template <typename... Strings>
-void Lua::write(const std::string& string, const Strings&... strings) {
-	write(string);
-	return write(strings...);
+void Lua::write(std::string_view string, const Strings&... strings) {
+    write(string);
+    return write(strings...);
 }
 
 void Lua::write_indent() {
-	return write(std::string(indentLevel, '\t'));
+    t_writeBuffer.append(indentLevel, '\t');
 }
 
 void Lua::create_file() {
 #ifndef _DEBUG
-	if (!forceOverwrite) {
+	if (!forceOverwrite && !g_isParallelMode.load()) {
 		file = CreateFileA(filePath.c_str(), GENERIC_READ, NULL, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
-
 		if (file != INVALID_HANDLE_VALUE) {
 			close_file();
-			assert(MessageBoxA(NULL, ("The file " + filePath + " already exists.\n\nDo you want to overwrite it?").c_str(), PROGRAM_NAME, MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2) == IDYES,
+			assert(MessageBoxA(NULL, ("The file " + filePath + " already exists.\nDo you want to overwrite it?").c_str(), PROGRAM_NAME, MB_ICONWARNING | MB_YESNO | MB_DEFBUTTON2) == IDYES,
 				"File already exists", filePath, DEBUG_INFO);
 		}
 	}
@@ -1045,8 +1040,7 @@ void Lua::close_file() {
 }
 
 void Lua::write_file() {
-	DWORD charsWritten = 0;
-	assert(WriteFile(file, writeBuffer.data(), writeBuffer.size(), &charsWritten, NULL) && !(writeBuffer.size() - charsWritten), "Failed writing to file", filePath, DEBUG_INFO);
-	writeBuffer.clear();
-	writeBuffer.shrink_to_fit();
+    DWORD charsWritten = 0;
+    assert(WriteFile(file, t_writeBuffer.data(), t_writeBuffer.size(), &charsWritten, NULL) && !(t_writeBuffer.size() - charsWritten), "Failed writing to file", filePath, DEBUG_INFO);
+    t_writeBuffer.clear();
 }
