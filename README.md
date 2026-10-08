@@ -4,7 +4,7 @@ LuaJIT Decompiler v2 reconstructs Lua source code from LuaJIT bytecode. It is a 
 
 The tool parses LuaJIT bytecode prototypes, rebuilds control flow and expression structure, and emits formatted Lua source. It supports stripped bytecode (without debug information), `goto` statements, locals, upvalues, and nested function prototypes.
 
-This fork replaces the upstream boolean expression reconstruction with a control-flow-graph-based algorithm derived from the paper *Decompiling Boolean Expressions from Java Bytecode* (Nanda & Arun-Kumar, ISEC 2016), and adds heuristic identifier reconstruction for stripped bytecode.
+This fork replaces the upstream boolean expression reconstruction with a control-flow-graph-based algorithm derived from the paper *Decompiling Boolean Expressions from Java Bytecode* (Nanda & Arun-Kumar, ISEC 2016), adds heuristic identifier reconstruction for stripped bytecode, and introduces concurrent batch processing.
 
 ## Features
 
@@ -13,8 +13,16 @@ This fork replaces the upstream boolean expression reconstruction with a control
 - Structured control flow: `if`/`elseif`/`else`, numeric and generic `for`, `while`, `repeat`, and `break`. Residual unstructured jumps are emitted as `goto` with labels.
 - Boolean expression reconstruction from conditional jump graphs (see [Algorithm](#boolean-expression-reconstruction-astconditiongraphh)).
 - Stripped bytecode support with deterministic fallback naming and heuristic name inference.
+- Concurrent batch processing
 
 ## Changes relative to upstream
+
+### Concurrency and fault isolation
+
+Upstream processes files sequentially and terminates entirely upon encountering an unhandled native exception (e.g., an access violation from malformed bytecode). This fork introduces a parallel execution model for directory inputs:
+
+1. **Worker pool:** A thread pool sized to the hardware concurrency (or the `LJD_MAX_THREADS` environment variable) processes files using dynamic batch sizing.
+2. **SEH wrapping:** Individual file decompilation is wrapped in an Exception Handling filter to intercept hardware faults, log the offending file and exception code, and safely increment the failure counter without crashing the worker thread.
 
 ### Boolean expression reconstruction (`ast/conditionGraph.h`)
 
@@ -62,7 +70,7 @@ All inferred names are sanitised against Lua's identifier rules and keyword list
    ```bash
    luajit-decompiler-v2.exe INPUT_PATH [options]
    ```
-2. All successfully decompiled `.lua` files are placed by default into the `output` folder located in the same directory as the executable, mirroring the input directory structure.
+2. All successfully decompiled `.lua` files are placed by default into the `output` folder located in the same directory as the executable, mirroring the input directory structure. When processing directories, files are automatically decompiled in parallel.
 
 **Available options:**
 
@@ -76,6 +84,12 @@ All inferred names are sanitised against Lua's identifier rules and keyword list
 | `-i`, `--ignore_debug_info` | Ignore bytecode debug information. |
 | `-m`, `--minimize_diffs` | Optimise output formatting to help minimise diffs. |
 | `-u`, `--unrestricted_ascii` | Disable default UTF-8 encoding and string restrictions. |
+
+**Environment variables:**
+
+| Variable | Effect |
+| :--- | :--- |
+| `LJD_MAX_THREADS` | Override the maximum number of concurrent worker threads (defaults to hardware concurrency). |
 
 ## Output conventions
 
@@ -96,10 +110,8 @@ All inferred names are sanitised against Lua's identifier rules and keyword list
 - Bytecode big-endian support (carried from upstream).
 - Improved decompilation logic for conditional assignments (carried from upstream).
 - Node splitting for untwistable boolean DAGs (paper, Section 6), to recover the currently rejected regions.
-- Folding of negated comparisons into complementary Lua operators (`not (a < b)` to `a >= b`) during expression emission.
 - Recovery of value-based `and`/`or` from `ISTC`/`ISFC` instruction pairs.
 - Normalisation of LuaJIT 2.1 trace-oriented opcodes (type assertions, restricted table accesses, loop opcode variants) where present in inputs.
-- Parallel processing of independent input files.
 - A round-trip verification harness (decompile, recompile, compare).
 
 ## References
@@ -107,3 +119,4 @@ All inferred names are sanitised against Lua's identifier rules and keyword list
 - M. G. Nanda, S. Arun-Kumar. *Decompiling Boolean Expressions from Java Bytecode.* ISEC 2016. [www.cse.iitd.ac.in/~sak/reports/isec2016-paper.pdf](https://www.cse.iitd.ac.in/~sak/reports/isec2016-paper.pdf)
 - Original project: [marsinator358/luajit-decompiler-v2](https://github.com/marsinator358/luajit-decompiler-v2)
 - Fork base: [Aussiemon/luajit-decompiler-v2](https://github.com/Aussiemon/luajit-decompiler-v2)
+```

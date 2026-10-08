@@ -43,7 +43,10 @@ void print(const std::string& message);
 //std::string input();
 void print_progress_bar(const double& progress = 0, const double& total = 100);
 void erase_progress_bar();
-void assert(const bool& assertion, const std::string& message, const std::string& filePath, const std::string& function, const std::string& source, const uint32_t& line);
+[[noreturn]] void throw_assert(const std::string& message, const std::string& filePath,
+                               const std::string& function, const std::string& source, uint32_t line);
+#define assert(cond, ...) \
+    do { if (!(cond)) throw_assert(__VA_ARGS__); } while (0)
 std::string byte_to_string(const uint8_t& byte);
 extern std::atomic<bool> g_isParallelMode;
 

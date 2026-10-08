@@ -100,16 +100,14 @@ private:
 
 	struct BlockIndexCache {
 		static constexpr uint32_t INVALID = static_cast<uint32_t>(-1);
-		std::unordered_map<uint32_t, uint32_t> idToIndex;
+		std::vector<uint32_t> idToIndex; // Direct array: index = ID, value = block index
 		bool dirty = true;
 		bool usable = false;
 
-		BlockIndexCache() { idToIndex.max_load_factor(0.7f); }
 		void invalidate() { dirty = true; }
 		
 		void rebuild(const std::vector<Statement*>& block) {
-			idToIndex.clear();
-			idToIndex.reserve(block.size() * 2 + 1);
+			uint32_t maxId = 0;
 			usable = true;
 			uint32_t lastValidId = INVALID;
 
@@ -118,22 +116,30 @@ private:
 				if (id == INVALID) continue;
 				if (lastValidId != INVALID && id < lastValidId) {
 					usable = false;
-					idToIndex.clear();
 					break;
 				}
 				lastValidId = id;
-				idToIndex[id] = i;
+				if (id > maxId) maxId = id;
+			}
+
+			if (!usable) return;
+
+			idToIndex.assign(maxId + 1, INVALID);
+			for (uint32_t i = 0; i < block.size(); ++i) {
+				const uint32_t id = block[i]->instruction.id;
+				if (id != INVALID) idToIndex[id] = i;
 			}
 			dirty = false;
 		}
 
 		bool try_find(const std::vector<Statement*>& block, const uint32_t id, uint32_t& outIndex) {
 			if (dirty) rebuild(block);
-			if (!usable) return false;
-			const auto it = idToIndex.find(id);
-			if (it == idToIndex.end()) { outIndex = INVALID; } 
-			else { outIndex = it->second; }
-			return true;
+			if (!usable || id >= idToIndex.size()) {
+				outIndex = INVALID;
+				return false;
+			}
+			outIndex = idToIndex[id];
+			return outIndex != INVALID;
 		}
 	};
 	

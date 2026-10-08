@@ -37,6 +37,10 @@ private:
 	void create_file();
 	void close_file();
 	void write_file();
+	
+	void write_integer(int64_t value);
+	void write_integer(uint64_t value);
+	void write_integer(uint32_t value);
 
 	const Bytecode& bytecode;
 	const Ast& ast;

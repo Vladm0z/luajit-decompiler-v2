@@ -34,10 +34,13 @@ private:
 
 	uint8_t get_next_byte();
 	uint8_t peek_next_byte();
+	void get_bytes(void* dst, uint32_t count);
 	uint32_t get_uleb128();
 	uint64_t get_uleb128_33();
 	std::string get_string();
 	TableConstant get_table_constant();
 
 	const Bytecode& bytecode;
+	const uint8_t* cursor = nullptr;
+	const uint8_t* bufferEnd = nullptr;
 };

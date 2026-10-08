@@ -475,14 +475,10 @@ void erase_progress_bar() {
 	isProgressBarActive = false;
 }
 
-void assert(const bool& assertion, const std::string& message, const std::string& filePath, const std::string& function, const std::string& source, const uint32_t& line) {
-	if (!assertion) throw Error{
-		.message = message,
-		.filePath = filePath,
-		.function = function,
-		.source = source,
-		.line = std::to_string(line)
-	};
+void throw_assert(const std::string& message, const std::string& filePath,
+                  const std::string& function, const std::string& source, uint32_t line) {
+    throw Error{ .message = message, .filePath = filePath,
+                 .function = function, .source = source, .line = std::to_string(line) };
 }
 
 std::string byte_to_string(const uint8_t& byte) {

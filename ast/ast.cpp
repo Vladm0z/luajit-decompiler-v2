@@ -1549,16 +1549,12 @@ void Ast::eliminate_slots(Function& function, std::vector<Statement*>& block, Bl
 				switch (block[i - 1]->type) {
 				case AST_STATEMENT_ASSIGNMENT:
 					if (block[i - 1]->assignment.variables.front().slot <= block[i]->assignment.expressions[block[i]->assignment.openSlots.size() - 1]->variable->slot) break;
-					compact_removed_statements(block);
 					assert(block[i - 1]->assignment.variables.size() == 1 && !(*block[i - 1]->assignment.variables.back().slotScope)->usages, "Invalid expression list assignment", bytecode.filePath, DEBUG_INFO);
 				case AST_STATEMENT_FUNCTION_CALL:
 					block[i]->assignment.expressions.emplace(block[i]->assignment.expressions.begin() + block[i]->assignment.openSlots.size(), block[i - 1]->assignment.expressions.back());
-					compact_removed_statements(block);
 					block[i]->instruction.label = block[i - 1]->instruction.label;
-					compact_removed_statements(block);
 					i--;
 					block.erase(block.begin() + i);
-					compact_removed_statements(block);
 					continue;
 				}
 
@@ -1569,30 +1565,23 @@ void Ast::eliminate_slots(Function& function, std::vector<Statement*>& block, Bl
 
 					while (true) {
 						function.slotScopeCollector.remove_scope(block[i]->assignment.expressions.back()->variable->slot, block[i]->assignment.expressions.back()->variable->slotScope);
-						compact_removed_statements(block);
 						block[i]->assignment.openSlots.pop_back();
-						compact_removed_statements(block);
 
 						if (block[i]->assignment.expressions.back()->variable->slot != block[i - 1]->assignment.variables.front().slot) {
 							block[i]->assignment.expressions.pop_back();
-							compact_removed_statements(block);
 							continue;
 						}
 
 						block[i]->assignment.expressions.back() = block[i - 1]->assignment.expressions.back();
-						compact_removed_statements(block);
 						block[i]->instruction.label = block[i - 1]->instruction.label;
-						compact_removed_statements(block);
 						i--;
 						block.erase(block.begin() + i);
-						compact_removed_statements(block);
 						break;
 					}
 				}
 
 				for (uint32_t j = block[i]->assignment.openSlots.size(); j--;) {
 					block[i]->assignment.openSlots[j] = &block[i]->assignment.expressions[j];
-					compact_removed_statements(block);
 				}
 
 				break;
@@ -1620,9 +1609,7 @@ void Ast::eliminate_slots(Function& function, std::vector<Statement*>& block, Bl
 					&& (*block[i - 2]->assignment.variables.back().slotScope)->usages == 1
 					&& block[i - 2]->assignment.variables.back().slot == block[i]->assignment.expressions.back()->binaryOperation->rightOperand->variable->slot) {
 					block[i]->assignment.openSlots[0] = &block[i]->assignment.expressions.back()->binaryOperation->rightOperand;
-					compact_removed_statements(block);
 					block[i]->assignment.openSlots[1] = &block[i]->assignment.expressions.back()->binaryOperation->leftOperand;
-					compact_removed_statements(block);
 				}
 
 				break;
@@ -1650,9 +1637,7 @@ void Ast::eliminate_slots(Function& function, std::vector<Statement*>& block, Bl
 					&& block[i - 3]->assignment.variables.back().slot == block[i]->assignment.variables.back().table->variable->slot
 					&& !block[i - 3]->assignment.expressions.back()->table->multresField) {
 					block[i]->assignment.openSlots[0] = &block[i]->assignment.expressions.back();
-					compact_removed_statements(block);
 					block[i]->assignment.openSlots[1] = &block[i]->assignment.variables.back().tableIndex;
-					compact_removed_statements(block);
 				}
 
 				break;
@@ -1676,9 +1661,7 @@ void Ast::eliminate_slots(Function& function, std::vector<Statement*>& block, Bl
 			block[i]->instruction.label = block[i - 1]->instruction.label;
 			i--;
 			function.slotScopeCollector.remove_scope(block[i]->assignment.variables.back().slot, block[i]->assignment.variables.back().slotScope);
-			compact_removed_statements(block);
 			block.erase(block.begin() + i);
-			compact_removed_statements(block);
 		} else {
 			for (uint8_t j = block[i]->assignment.openSlots.size();
 				j--
@@ -1709,27 +1692,19 @@ void Ast::eliminate_slots(Function& function, std::vector<Statement*>& block, Bl
 					&& block[i - 2]->assignment.expressions.back()->variable->slot == block[i - 1]->assignment.expressions.back()->variable->table->variable->slot) {
 					if (block[i]->type == AST_STATEMENT_RETURN) {
 						block[i]->assignment.multresReturn->functionCall->isMethod = true;
-						compact_removed_statements(block);
 						block[i]->assignment.multresReturn->functionCall->arguments.erase(block[i]->assignment.multresReturn->functionCall->arguments.begin());
-						compact_removed_statements(block);
 					} else {
 						block[i]->assignment.expressions.back()->functionCall->isMethod = true;
-						compact_removed_statements(block);
 						block[i]->assignment.expressions.back()->functionCall->arguments.erase(block[i]->assignment.expressions.back()->functionCall->arguments.begin());
-						compact_removed_statements(block);
 					}
 
 					block[i]->assignment.openSlots.erase(block[i]->assignment.openSlots.begin() + j);
-					compact_removed_statements(block);
 					block[i]->assignment.openSlots.emplace(block[i]->assignment.openSlots.begin(), &block[i - 1]->assignment.expressions.back()->variable->table);
-					compact_removed_statements(block);
 					function.slotScopeCollector.remove_scope(block[i - 2]->assignment.variables.back().slot, block[i - 2]->assignment.variables.back().slotScope);
 					block[i - 1]->instruction.label = block[i - 2]->instruction.label;
-					compact_removed_statements(block);
 					(*block[i - 2]->assignment.expressions.back()->variable->slotScope)->usages--;
 					i--;
 					block.erase(block.begin() + i - 1);
-					compact_removed_statements(block);
 				}
 
 				if (block[i - 1]->assignment.variables.back().slot != (*block[i]->assignment.openSlots[j])->variable->slot) continue;
@@ -1749,7 +1724,6 @@ void Ast::eliminate_slots(Function& function, std::vector<Statement*>& block, Bl
 				block[i]->instruction.label = block[i - 1]->instruction.label;
 				i--;
 				block.erase(block.begin() + i);
-				compact_removed_statements(block);
 			}
 		}
 
@@ -2042,7 +2016,6 @@ void Ast::eliminate_slots(Function& function, std::vector<Statement*>& block, Bl
 								block[i]->instruction.label = block[index]->instruction.label;
 								block[i]->assignment.isTableConstructor = false;
 								block.erase(block.begin() + index, block.begin() + i);
-								compact_removed_statements(block);
 								i = index;
 							}
 						}
@@ -2092,7 +2065,6 @@ void Ast::eliminate_slots(Function& function, std::vector<Statement*>& block, Bl
 
 							(*block[i - 1]->assignment.variables.back().slotScope)->usages--;
 							block.erase(block.begin() + i);
-							compact_removed_statements(block);
 							i -= 2;
 							break;
 						}
@@ -2103,7 +2075,6 @@ void Ast::eliminate_slots(Function& function, std::vector<Statement*>& block, Bl
 							block[i]->instruction.label = block[i - 1]->instruction.label;
 							i--;
 							block.erase(block.begin() + i);
-							compact_removed_statements(block);
 							break;
 						}
 					}
@@ -2125,7 +2096,7 @@ void Ast::eliminate_conditions(Function& function, std::vector<Statement*>& bloc
 	bool hasBoolConstruct, hasEndAssignment;
 	
 	BlockIndexCache blockIdCache;
-	const bool useBlockIdCache = false;
+	const bool useBlockIdCache = true;
 
 	auto find_block_index = [&](const uint32_t id) -> uint32_t {
 		uint32_t cachedIndex = INVALID_ID;
@@ -2939,7 +2910,8 @@ void Ast::build_if_statements(Function& function, std::vector<Statement*>& block
 	BlockInfo blockInfo = { .block = block, .previousBlock = previousBlock };
 	uint32_t index, targetLabel;
 	std::vector<uint32_t> indexes;
-	std::unordered_map<Statement*, uint32_t> offsetMap;
+	thread_local std::unordered_map<Statement*, uint32_t> offsetMap;
+	offsetMap.clear();
 
 	for (uint32_t i = 0; i < block.size(); i++) {
 		if (indexes.size()
@@ -3057,8 +3029,10 @@ void Ast::clean_up(Function& function) {
 	} else {
 		function.parameterNames.resize(function.prototype.header.parameters);
 
+		thread_local char argBuffer[64];
 		for (uint32_t i = function.parameterNames.size(); i--;) {
-			function.parameterNames[i] = "arg_" + std::to_string(minimizeDiffs ? function.level : function.id) + "_" + std::to_string(i);
+			int len = std::snprintf(argBuffer, sizeof(argBuffer), "arg_%u_%u", minimizeDiffs ? function.level : function.id, i);
+			function.parameterNames[i].assign(argBuffer, len);
 			(*function.slotScopeCollector.slotInfos[i].activeSlotScope)->name = function.parameterNames[i];
 		}
 	}
@@ -3076,9 +3050,11 @@ void Ast::clean_up(Function& function) {
 	uint32_t variableCounter = 0, iteratorCounter = 0;
 	clean_up_block(function, function.block, variableCounter, iteratorCounter, nullptr);
 
+	thread_local char labelBuffer[64];
 	for (uint32_t i = 0, labelCounter = 0; i < function.labels.size(); i++) {
 		if (!function.labels[i].jumpIds.size()) continue;
-		function.labels[i].name = "label_" + std::to_string(minimizeDiffs ? function.level : function.id) + "_" + std::to_string(labelCounter);
+		int len = std::snprintf(labelBuffer, sizeof(labelBuffer), "label_%u_%u", minimizeDiffs ? function.level : function.id, labelCounter);
+		function.labels[i].name.assign(labelBuffer, len);
 		labelCounter++;
 	}
 }
@@ -3090,6 +3066,7 @@ std::string Ast::sanitize_identifier(const std::string& name) {
 		"or", "repeat", "return", "then", "true", "until", "while"
 	};
 	std::string result;
+	result.reserve(name.size());
 	for (const char& c : name) {
 		if ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_') result += c;
 		else result += '_';
@@ -3170,7 +3147,11 @@ std::string Ast::infer_variable_name(Function& function, const Expression* expre
 	name = sanitize_identifier(name);
 	if (!name.size()) return fallback;
 	std::string unique = name;
-	for (uint32_t suffix = 2; function.usedNames.count(unique); suffix++) unique = name + "_" + std::to_string(suffix);
+	thread_local char suffixBuffer[64];
+	for (uint32_t suffix = 2; function.usedNames.count(unique); suffix++) {
+		int len = std::snprintf(suffixBuffer, sizeof(suffixBuffer), "%s_%u", name.c_str(), suffix);
+		unique.assign(suffixBuffer, len);
+	}
 	return unique;
 }
 
@@ -3255,7 +3236,13 @@ void Ast::clean_up_block(Function& function, std::vector<Statement*>& block, uin
 					std::string name;
 					if (block[i]->type == AST_STATEMENT_NUMERIC_FOR) {
 						static const std::string NUMERIC[] = { "i", "j", "k", "l" };
-						name = iteratorCounter < 4 ? NUMERIC[iteratorCounter] : "i" + std::to_string(iteratorCounter);
+						if (iteratorCounter < 4) {
+							name = NUMERIC[iteratorCounter];
+						} else {
+							thread_local char numBuffer[32];
+							int len = std::snprintf(numBuffer, sizeof(numBuffer), "i%u", iteratorCounter);
+							name.assign(numBuffer, len);
+						}
 					} else {
 						const Expression* iterator = block[i]->assignment.expressions.size() ? block[i]->assignment.expressions[0] : nullptr;
 						const bool isIpairs = iterator && iterator->type == AST_EXPRESSION_FUNCTION_CALL
@@ -3267,13 +3254,21 @@ void Ast::clean_up_block(Function& function, std::vector<Statement*>& block, uin
 							&& iterator->functionCall->function->variable->type == AST_VARIABLE_GLOBAL
 							&& (iterator->functionCall->function->variable->name == "pairs" || iterator->functionCall->function->variable->name == "next");
 						if (isIpairs || isPairs) name = j == 0 ? (isIpairs ? "i" : "k") : "v";
-						else name = "iter_" + std::to_string(minimizeDiffs ? function.level : function.id) + "_" + std::to_string(iteratorCounter);
+						else {
+							thread_local char iterBuffer[64];
+							int len = std::snprintf(iterBuffer, sizeof(iterBuffer), "iter_%u_%u", minimizeDiffs ? function.level : function.id, iteratorCounter);
+							name.assign(iterBuffer, len);
+						}
 					}
 					iteratorCounter++;
 					std::string unique = name;
-					for (uint32_t suffix = 2; function.usedNames.count(unique); suffix++) unique = name + "_" + std::to_string(suffix);
+					thread_local char buffer[128];
+					for (uint32_t suffix = 2; function.usedNames.count(unique); suffix++) {
+						int len = std::snprintf(buffer, sizeof(buffer), "%s_%u", name.c_str(), suffix);
+						unique.assign(buffer, len);
+					}
 					function.usedNames.insert(unique);
-					(*block[i]->assignment.variables[j].slotScope)->name = unique;
+					(*block[i]->assignment.variables[j].slotScope)->name = std::move(unique);
 				}
 			}
 
@@ -3453,8 +3448,9 @@ void Ast::clean_up_block(Function& function, std::vector<Statement*>& block, uin
 
 				declarations.emplace_back(&block[i]->assignment.variables[j]);
 				const Expression* source = j < block[i]->assignment.expressions.size() ? block[i]->assignment.expressions[j] : nullptr;
-				const std::string name = infer_variable_name(function, source,
-				"var_" + std::to_string(minimizeDiffs ? function.level : function.id) + "_" + std::to_string(variableCounter));
+				thread_local char varBuffer[64];
+				int varLen = std::snprintf(varBuffer, sizeof(varBuffer), "var_%u_%u", minimizeDiffs ? function.level : function.id, variableCounter);
+				const std::string name = infer_variable_name(function, source, std::string(varBuffer, varLen));
 				variableCounter++;
 				(*block[i]->assignment.variables[j].slotScope)->name = name;
 				function.usedNames.insert(name);
@@ -3586,7 +3582,8 @@ void Ast::clean_up_block(Function& function, std::vector<Statement*>& block, uin
 		}
 	}
 
-	std::vector<uint32_t> labels;
+	thread_local std::vector<uint32_t> labels;
+	labels.clear();
 
 	for (uint32_t i = block.size(); i--;) {
 		if (block[i]->type != AST_STATEMENT_DECLARATION) continue;
@@ -3731,7 +3728,10 @@ void Ast::check_valid_name(Constant* const& constant) {
 
 void Ast::check_special_number(Expression* const& expression, const bool& isCdata) {
 	const uint64_t rawDouble = std::bit_cast<uint64_t>(expression->constant->number);
-	if ((rawDouble & DOUBLE_EXPONENT) != DOUBLE_SPECIAL) return assert(rawDouble != DOUBLE_NEGATIVE_ZERO || isCdata, "Number constant is negative zero", bytecode.filePath, DEBUG_INFO);
+	if ((rawDouble & DOUBLE_EXPONENT) != DOUBLE_SPECIAL) {
+		assert(rawDouble != DOUBLE_NEGATIVE_ZERO || isCdata, "Number constant is negative zero", bytecode.filePath, DEBUG_INFO);
+		return;
+	}
 	assert(!(rawDouble & DOUBLE_FRACTION), "Number constant is NaN", bytecode.filePath, DEBUG_INFO);
 	if (isCdata) return;
 	expression->set_type(AST_EXPRESSION_BINARY_OPERATION);
@@ -3952,25 +3952,13 @@ Ast::Expression* Ast::new_table(const Function& function, const uint16_t& index)
 				value = &trueField.value;
 				break;
 			case AST_CONSTANT_NUMBER:
-				position = numberFields.size();
-
-				while (position && numberFields[position - 1].key->constant->number > key->constant->number) {
-					position--;
-				}
-
-				numberFields.emplace(numberFields.begin() + position, Table::Field{ .key = key });
-				value = &numberFields[position].value;
+				numberFields.push_back(Table::Field{ .key = key });
+				value = &numberFields.back().value;
 				break;
 			case AST_CONSTANT_STRING:
 				check_valid_name(key->constant);
-				position = stringFields.size();
-
-				while (position && stringFields[position - 1].key->constant->string.compare(key->constant->string) > 0) {
-					position--;
-				}
-
-				stringFields.emplace(stringFields.begin() + position, Table::Field{ .key = key });
-				value = &stringFields[position].value;
+				stringFields.push_back(Table::Field{ .key = key });
+				value = &stringFields.back().value;
 				break;
 			default:
 				throw nullptr;
@@ -3978,6 +3966,13 @@ Ast::Expression* Ast::new_table(const Function& function, const uint16_t& index)
 
 			*value = new_table_constant(function.get_constant(index).table[i].value);
 		}
+
+		std::sort(numberFields.begin(), numberFields.end(), [](const Table::Field& a, const Table::Field& b) {
+			return a.key->constant->number < b.key->constant->number;
+		});
+		std::sort(stringFields.begin(), stringFields.end(), [](const Table::Field& a, const Table::Field& b) {
+			return a.key->constant->string < b.key->constant->string;
+		});
 
 		if (falseField.key) expression->table->constants.fields.emplace_back(falseField);
 		if (trueField.key) expression->table->constants.fields.emplace_back(trueField);

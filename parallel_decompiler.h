@@ -1,4 +1,3 @@
-// parallel_decompiler.h
 #pragma once
 
 #include <algorithm>
@@ -85,8 +84,8 @@ inline size_t resolve_batch_size(size_t fileCount, unsigned int threadCount) {
     }
 
     if (batch > 32) {
-		batch = 32;
-	}
+        batch = 32;
+    }
 
     return batch;
 }
@@ -108,7 +107,7 @@ inline bool looks_like_luajit_bytecode(const std::string& path) {
         return false;
     }
 
-    uint8_t buffer[64];
+    uint8_t buffer[3];
     DWORD bytesRead = 0;
 
     BOOL ok = ReadFile(
@@ -125,141 +124,143 @@ inline bool looks_like_luajit_bytecode(const std::string& path) {
         return false;
     }
 
-    for (DWORD i = 0; i + 2 < bytesRead; ++i) {
-        if (
-            buffer[i] == 0x1B &&
-            (
-                (buffer[i + 1] == 'L' && buffer[i + 2] == 'J') ||
-                (buffer[i + 1] == 'F' && buffer[i + 2] == 'S')
-            )
-        ) {
-            return true;
-        }
-    }
-
-    return false;
+    return buffer[0] == 0x1B && (
+        (buffer[1] == 'L' && buffer[2] == 'J') ||
+        (buffer[1] == 'F' && buffer[2] == 'S')
+    );
 }
 
 namespace detail {
 
-inline int decompile_seh_filter(unsigned int code) {
-	constexpr unsigned int MSVC_CPP_EXCEPTION = 0xE06D7363u;
+thread_local uint64_t tl_nsBytecode = 0;
+thread_local uint64_t tl_nsAst = 0;
+thread_local uint64_t tl_nsLua = 0;
+thread_local uint64_t tl_nsTotal = 0;
 
-	return code == MSVC_CPP_EXCEPTION
-		? EXCEPTION_CONTINUE_SEARCH
-		: EXCEPTION_EXECUTE_HANDLER;
+inline int decompile_seh_filter(unsigned int code) {
+    constexpr unsigned int MSVC_CPP_EXCEPTION = 0xE06D7363u;
+
+    return code == MSVC_CPP_EXCEPTION
+        ? EXCEPTION_CONTINUE_SEARCH
+        : EXCEPTION_EXECUTE_HANDLER;
 }
 
 inline void log_seh_failure(const std::string& inputPath, unsigned int code) {
-	std::lock_guard<std::mutex> lock(g_print_mutex);
-	std::cerr
-		<< "[SEH] "
-		<< inputPath
-		<< ": exception code 0x"
-		<< std::hex << code << std::dec
-		<< "\n";
+    std::lock_guard<std::mutex> lock(g_print_mutex);
+    std::cerr
+        << "[SEH] "
+        << inputPath
+        << ": exception code 0x"
+        << std::hex << code << std::dec
+        << "\n";
 }
 
 inline void decompile_file_core(
-	const std::string& inputPath,
-	const std::string& outputPath,
-	const DecompilerConfig& config
+    const std::string& inputPath,
+    const std::string& outputPath,
+    const DecompilerConfig& config
 ) {
-	using Clock = std::chrono::high_resolution_clock;
+    using Clock = std::chrono::high_resolution_clock;
 
-	const auto t0 = Clock::now();
+    const auto t0 = Clock::now();
 
-	Bytecode bytecode(inputPath);
-	bytecode();
+    Bytecode bytecode(inputPath);
+    bytecode();
 
-	const auto t1 = Clock::now();
+    const auto t1 = Clock::now();
 
-	Ast ast(bytecode, config.ignoreDebugInfo, config.minimizeDiffs);
-	ast();
+    Ast ast(bytecode, config.ignoreDebugInfo, config.minimizeDiffs);
+    ast();
 
-	const auto t2 = Clock::now();
+    const auto t2 = Clock::now();
 
-	Lua lua(
-		bytecode,
-		ast,
-		outputPath,
-		config.forceOverwrite,
-		config.minimizeDiffs,
-		config.unrestrictedAscii
-	);
-	lua();
+    Lua lua(
+        bytecode,
+        ast,
+        outputPath,
+        config.forceOverwrite,
+        config.minimizeDiffs,
+        config.unrestrictedAscii
+    );
+    lua();
 
-	const auto t3 = Clock::now();
+    const auto t3 = Clock::now();
 
-	g_nsBytecode += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
-	g_nsAst      += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - t1).count());
-	g_nsLua      += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(t3 - t2).count());
-	g_nsTotal    += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(t3 - t0).count());
+	uint64_t nsBc = std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count();
+	uint64_t nsAst = std::chrono::duration_cast<std::chrono::nanoseconds>(t2 - t1).count();
+	uint64_t nsLua = std::chrono::duration_cast<std::chrono::nanoseconds>(t3 - t2).count();
+	uint64_t nsTotal = std::chrono::duration_cast<std::chrono::nanoseconds>(t3 - t0).count();
 
-	if (std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t0).count() > 5000) {
-		++g_slowFiles;
-	}
+	// Accumulate into thread-local storage
+	tl_nsBytecode += nsBc;
+	tl_nsAst += nsAst;
+	tl_nsLua += nsLua;
+	tl_nsTotal += nsTotal;
+
+    if (std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t0).count() > 5000) {
+        ++g_slowFiles;
+    }
 }
 
 inline bool decompile_file_seh(
-	const std::string& inputPath,
-	const std::string& outputPath,
-	const DecompilerConfig& config
+    const std::string& inputPath,
+    const std::string& outputPath,
+    const DecompilerConfig& config
 ) {
-	__try {
-		detail::decompile_file_core(inputPath, outputPath, config);
-		return true;
-	}
-	__except (detail::decompile_seh_filter(GetExceptionCode())) {
-		const unsigned int code = GetExceptionCode();
-		detail::log_seh_failure(inputPath, code);
-		return false;
-	}
+    __try {
+        detail::decompile_file_core(inputPath, outputPath, config);
+        return true;
+    }
+    __except (detail::decompile_seh_filter(GetExceptionCode())) {
+        const unsigned int code = GetExceptionCode();
+        detail::log_seh_failure(inputPath, code);
+        return false;
+    }
 }
 
 } // namespace detail
 
 inline void decompile_file_safe(
-	const std::string& inputPath,
-	const std::string& outputPath,
-	const DecompilerConfig& config
+    const std::string & inputPath,
+    const std::string & outputPath,
+    const DecompilerConfig & config
 ) {
-	{
-		std::lock_guard<std::mutex> lock(g_print_mutex);
-		std::cerr << "[Start] " << inputPath << "\n";
-	}
+    {
+        std::lock_guard<std::mutex> lock(g_print_mutex);
+        std::cerr << "[Start] " << inputPath << "\n";
+    }
 
-	try {
-		if (!detail::decompile_file_seh(inputPath, outputPath, config)) {
-			++g_filesFailed;
-			return;
-		}
+    try {
+        if (!detail::decompile_file_seh(inputPath, outputPath, config)) {
+            ++g_filesFailed;
+            return;
+        }
 
-		++g_filesProcessed;
+        ++g_filesProcessed;
 
-		{
-			std::lock_guard<std::mutex> lock(g_print_mutex);
-			std::cerr << "[Done]  " << inputPath << "\n";
-		}
-	}
-	catch (const Error& error) {
-		++g_filesFailed;
-		std::lock_guard<std::mutex> lock(g_print_mutex);
-		std::cerr
-			<< "[Error] " << inputPath << "\n"
-			<< "  Source: " << error.source << ":" << error.line << "\n"
-			<< "  " << error.message << "\n";
-	}
-	catch (const std::exception& e) {
-		++g_filesFailed;
-		std::lock_guard<std::mutex> lock(g_print_mutex);
-		std::cerr << "[Error] " << inputPath << ": " << e.what() << "\n";
-	}
-	catch (...) {
-		++g_filesFailed;
-		std::lock_guard<std::mutex> lock(g_print_mutex);
-		std::cerr << "[Error] " << inputPath << ": Unknown exception/Assertion\n";
-	}
+        {
+            std::lock_guard<std::mutex> lock(g_print_mutex);
+            std::cerr << "[Done]  " << inputPath << "\n";
+        }
+    }
+    catch (const Error& error) {
+        ++g_filesFailed;
+        std::lock_guard<std::mutex> lock(g_print_mutex);
+        std::cerr
+            << "[Error] " << inputPath << "\n"
+            << "  Source: " << error.source << ":" << error.line << "\n"
+            << "  " << error.message << "\n";
+    }
+    catch (const std::exception& e) {
+        ++g_filesFailed;
+        std::lock_guard<std::mutex> lock(g_print_mutex);
+        std::cerr << "[Error] " << inputPath << ": " << e.what() << "\n";
+    }
+    catch (...) {
+        ++g_filesFailed;
+        std::lock_guard<std::mutex> lock(g_print_mutex);
+        std::cerr << "[Error] " << inputPath << ": Unknown exception/Assertion\n";
+    }
 }
 
 inline void decompile_all_parallel(
@@ -275,6 +276,11 @@ inline void decompile_all_parallel(
 
     if (total == 1) {
         decompile_file_safe(inputPaths[0], outputPaths[0], config);
+        
+        g_nsBytecode += detail::tl_nsBytecode;
+        g_nsAst += detail::tl_nsAst;
+        g_nsLua += detail::tl_nsLua;
+        g_nsTotal += detail::tl_nsTotal;
 
         std::lock_guard<std::mutex> lock(g_print_mutex);
         print(
@@ -282,6 +288,17 @@ inline void decompile_all_parallel(
             std::to_string(g_filesProcessed.load()) +
             ", Failed: " +
             std::to_string(g_filesFailed.load())
+        );
+        print(
+            "Phase time totals -> Bytecode: " +
+            std::to_string(g_nsBytecode.load() / 1000000000ull) +
+            " s, AST: " +
+            std::to_string(g_nsAst.load() / 1000000000ull) +
+            " s, Lua: " +
+            std::to_string(g_nsLua.load() / 1000000000ull) +
+            " s, Total: " +
+            std::to_string(g_nsTotal.load() / 1000000000ull) +
+            " s"
         );
 
         return;
@@ -333,6 +350,12 @@ inline void decompile_all_parallel(
                         );
                     }
                 }
+                
+                // Merge thread-local timings into globals ONCE per worker thread
+                g_nsBytecode += detail::tl_nsBytecode;
+                g_nsAst += detail::tl_nsAst;
+                g_nsLua += detail::tl_nsLua;
+                g_nsTotal += detail::tl_nsTotal;
             }
         );
     }
@@ -349,16 +372,16 @@ inline void decompile_all_parallel(
             ", Failed: " +
             std::to_string(g_filesFailed.load())
         );
-		print(
-			"Phase time totals -> Bytecode: " +
-			std::to_string(g_nsBytecode.load() / 1000000000ull) +
-			" s, AST: " +
-			std::to_string(g_nsAst.load() / 1000000000ull) +
-			" s, Lua: " +
-			std::to_string(g_nsLua.load() / 1000000000ull) +
-			" s, Total: " +
-			std::to_string(g_nsTotal.load() / 1000000000ull) +
-			" s"
-		);
+        print(
+            "Phase time totals -> Bytecode: " +
+            std::to_string(g_nsBytecode.load() / 1000000000ull) +
+            " s, AST: " +
+            std::to_string(g_nsAst.load() / 1000000000ull) +
+            " s, Lua: " +
+            std::to_string(g_nsLua.load() / 1000000000ull) +
+            " s, Total: " +
+            std::to_string(g_nsTotal.load() / 1000000000ull) +
+            " s"
+        );
     }
 }

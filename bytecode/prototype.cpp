@@ -3,12 +3,15 @@
 Bytecode::Prototype::Prototype(const Bytecode& bytecode) : bytecode(bytecode) {}
 
 void Bytecode::Prototype::operator()(std::vector<Prototype*>& unlinkedPrototypes) {
+	cursor = bytecode.fileBuffer.data();
+	bufferEnd = bytecode.fileBuffer.data() + bytecode.fileBuffer.size();
 	read_header();
 	read_instructions();
 	read_upvalues();
 	read_constants(unlinkedPrototypes);
 	read_number_constants();
 	read_debug_info();
+	prototypeSize = static_cast<uint32_t>(cursor - bytecode.fileBuffer.data());
 	assert(prototypeSize == bytecode.fileBuffer.size(), "Prototype has unread bytes left", bytecode.filePath, DEBUG_INFO);
 	unlinkedPrototypes.emplace_back(this);
 }
@@ -30,10 +33,16 @@ void Bytecode::Prototype::read_header() {
 }
 
 void Bytecode::Prototype::read_instructions() {
+	const bool isBigEndian = bytecode.header.flags & Bytecode::BC_F_BE;
 	for (uint32_t i = 0; i < instructions.size(); i++) {
-		instructions[i].type = get_op_type(get_next_byte(), bytecode.header.version);
+		assert(cursor + 4 <= bufferEnd, "Prototype read would exceed end of buffer", bytecode.filePath, DEBUG_INFO);
+		const uint8_t opByte = cursor[0];
+		const uint8_t byte1 = cursor[1];
+		const uint8_t byte2 = cursor[2];
+		const uint8_t byte3 = cursor[3];
+		cursor += 4;
+		instructions[i].type = get_op_type(opByte, bytecode.header.version);
 		assert(instructions[i].type < BC_OP_INVALID, "Prototype has invalid instruction (" + byte_to_string(instructions[i].type) + ")", bytecode.filePath, DEBUG_INFO);
-
 		switch (instructions[i].type) {
 		case BC_OP_ISTYPE:
 		case BC_OP_ISNUM:
@@ -56,39 +65,34 @@ void Bytecode::Prototype::read_instructions() {
 		case BC_OP_FUNCCW:
 			assert(false, "Prototype has unsupported instruction (" + byte_to_string(instructions[i].type) + ")", bytecode.filePath, DEBUG_INFO);
 		}
-
-		instructions[i].a = get_next_byte();
-
+		instructions[i].a = byte1;
 		if (is_op_abc_format(instructions[i].type)) {
-			instructions[i].c = get_next_byte();
-			instructions[i].b = get_next_byte();
+			instructions[i].c = byte2;
+			instructions[i].b = byte3;
 		} else {
-			uint8_t b1 = get_next_byte();
-			uint8_t b2 = get_next_byte();
-			if (bytecode.header.flags & Bytecode::BC_F_BE) {
-				instructions[i].d = (uint16_t)b1 << 8 | b2;
-			} else {
-				instructions[i].d = (uint16_t)b2 << 8 | b1;
-			}
+			instructions[i].d = isBigEndian ? ((uint16_t)byte2 << 8 | byte3) : ((uint16_t)byte3 << 8 | byte2);
 		}
 	}
 }
 
 void Bytecode::Prototype::read_upvalues() {
-	for (uint8_t i = 0; i < upvalues.size(); i++) {
-		uint8_t b1 = get_next_byte();
-		uint8_t b2 = get_next_byte();
-		if (bytecode.header.flags & Bytecode::BC_F_BE) {
-			upvalues[i] = (uint16_t)b1 << 8 | b2;
-		} else {
-			upvalues[i] = (uint16_t)b2 << 8 | b1;
+	assert(cursor + upvalues.size() * 2 <= bufferEnd, "Prototype read would exceed end of buffer", bytecode.filePath, DEBUG_INFO);
+	if (bytecode.header.flags & Bytecode::BC_F_BE) {
+		for (uint8_t i = 0; i < upvalues.size(); i++) {
+			upvalues[i] = (uint16_t)cursor[0] << 8 | cursor[1];
+			cursor += 2;
+		}
+	} else {
+		for (uint8_t i = 0; i < upvalues.size(); i++) {
+			upvalues[i] = (uint16_t)cursor[1] << 8 | cursor[0];
+			cursor += 2;
 		}
 	}
 }
 
 uint8_t Bytecode::Prototype::peek_next_byte() {
-	assert(prototypeSize < bytecode.fileBuffer.size(), "Prototype read would exceed end of buffer", bytecode.filePath, DEBUG_INFO);
-	return bytecode.fileBuffer[prototypeSize];
+	assert(cursor < bufferEnd, "Prototype read would exceed end of buffer", bytecode.filePath, DEBUG_INFO);
+	return *cursor;
 }
 
 void Bytecode::Prototype::read_constants(std::vector<Prototype*>& unlinkedPrototypes) {
@@ -98,44 +102,43 @@ void Bytecode::Prototype::read_constants(std::vector<Prototype*>& unlinkedProtot
 		type = get_uleb128();
 
 		switch (type) {
-		case BC_KGC_CHILD:
-			constants[i].type = BC_KGC_CHILD;
-			assert(unlinkedPrototypes.size(), "Failed to link child prototype", bytecode.filePath, DEBUG_INFO);
-			constants[i].prototype = unlinkedPrototypes.back();
-			unlinkedPrototypes.pop_back();
-			continue;
-		case BC_KGC_TAB:
-			constants[i].type = BC_KGC_TAB;
-			constants[i].array.resize(get_uleb128());
-			constants[i].table.resize(get_uleb128());
+			case BC_KGC_CHILD:
+				constants[i].type = BC_KGC_CHILD;
+				assert(unlinkedPrototypes.size(), "Failed to link child prototype", bytecode.filePath, DEBUG_INFO);
+				constants[i].prototype = unlinkedPrototypes.back();
+				unlinkedPrototypes.pop_back();
+				continue;
+			case BC_KGC_TAB:
+				constants[i].type = BC_KGC_TAB;
+				constants[i].array.resize(get_uleb128());
+				constants[i].table.resize(get_uleb128());
 
-			for (uint32_t j = 0; j < constants[i].array.size(); j++) {
-				constants[i].array[j] = get_table_constant();
+				for (uint32_t j = 0; j < constants[i].array.size(); j++) {
+					constants[i].array[j] = get_table_constant();
+				}
+
+				for (uint32_t j = 0; j < constants[i].table.size(); j++) {
+					constants[i].table[j].key = get_table_constant();
+					constants[i].table[j].value = get_table_constant();
+				}
+
+				continue;
+			case BC_KGC_COMPLEX:
+				assert(!get_uleb128() && !get_uleb128(), "Prototype has invalid cdata constant", bytecode.filePath, DEBUG_INFO);
+			case BC_KGC_I64:
+			case BC_KGC_U64:
+				constants[i].type = (BC_KGC)type;
+				constants[i].cdata = get_uleb128();
+				constants[i].cdata |= (uint64_t)get_uleb128() << 32;
+				continue;
+			default: {
+				const uint32_t length = type - BC_KGC_STR;
+				assert(cursor + length <= bufferEnd, "Prototype read would exceed end of buffer", bytecode.filePath, DEBUG_INFO);
+				constants[i].type = BC_KGC_STR;
+				constants[i].string.assign(reinterpret_cast<const char*>(cursor), length);
+				cursor += length;
+				continue;
 			}
-
-			for (uint32_t j = 0; j < constants[i].table.size(); j++) {
-				constants[i].table[j].key = get_table_constant();
-				constants[i].table[j].value = get_table_constant();
-			}
-
-			continue;
-		case BC_KGC_COMPLEX:
-			assert(!get_uleb128() && !get_uleb128(), "Prototype has invalid cdata constant", bytecode.filePath, DEBUG_INFO);
-		case BC_KGC_I64:
-		case BC_KGC_U64:
-			constants[i].type = (BC_KGC)type;
-			constants[i].cdata = get_uleb128();
-			constants[i].cdata |= (uint64_t)get_uleb128() << 32;
-			continue;
-		default:
-			constants[i].type = BC_KGC_STR;
-			constants[i].string.resize(type - BC_KGC_STR);
-
-			for (uint32_t j = 0; j < constants[i].string.size(); j++) {
-				constants[i].string[j] = get_next_byte();
-			}
-
-			continue;
 		}
 	}
 }
@@ -156,33 +159,36 @@ void Bytecode::Prototype::read_number_constants() {
 void Bytecode::Prototype::read_debug_info() {
 	if (!header.hasDebugInfo) return;
 	lineMap.resize(instructions.size());
-
 	if (header.lineCount < 256) {
+		assert(cursor + lineMap.size() <= bufferEnd, "Prototype read would exceed end of buffer", bytecode.filePath, DEBUG_INFO);
 		for (uint32_t i = 0; i < lineMap.size(); i++) {
-			lineMap[i] = get_next_byte();
+			lineMap[i] = cursor[i];
 		}
+		cursor += lineMap.size();
 	} else if (header.lineCount < 65536) {
-		for (uint32_t i = 0; i < lineMap.size(); i++) {
-			uint8_t b1 = get_next_byte();
-			uint8_t b2 = get_next_byte();
-			if (bytecode.header.flags & Bytecode::BC_F_BE) {
-				lineMap[i] = (uint16_t)b1 << 8 | b2;
-			} else {
-				lineMap[i] = (uint16_t)b2 << 8 | b1;
+		assert(cursor + lineMap.size() * 2 <= bufferEnd, "Prototype read would exceed end of buffer", bytecode.filePath, DEBUG_INFO);
+		if (bytecode.header.flags & Bytecode::BC_F_BE) {
+			for (uint32_t i = 0; i < lineMap.size(); i++) {
+				lineMap[i] = (uint16_t)cursor[i * 2] << 8 | cursor[i * 2 + 1];
+			}
+		} else {
+			for (uint32_t i = 0; i < lineMap.size(); i++) {
+				lineMap[i] = (uint16_t)cursor[i * 2 + 1] << 8 | cursor[i * 2];
 			}
 		}
+		cursor += lineMap.size() * 2;
 	} else {
-		for (uint32_t i = 0; i < lineMap.size(); i++) {
-			uint8_t b1 = get_next_byte();
-			uint8_t b2 = get_next_byte();
-			uint8_t b3 = get_next_byte();
-			uint8_t b4 = get_next_byte();
-			if (bytecode.header.flags & Bytecode::BC_F_BE) {
-				lineMap[i] = (uint32_t)b1 << 24 | (uint32_t)b2 << 16 | (uint32_t)b3 << 8 | b4;
-			} else {
-				lineMap[i] = (uint32_t)b4 << 24 | (uint32_t)b3 << 16 | (uint32_t)b2 << 8 | b1;
+		assert(cursor + lineMap.size() * 4 <= bufferEnd, "Prototype read would exceed end of buffer", bytecode.filePath, DEBUG_INFO);
+		if (bytecode.header.flags & Bytecode::BC_F_BE) {
+			for (uint32_t i = 0; i < lineMap.size(); i++) {
+				lineMap[i] = (uint32_t)cursor[i * 4] << 24 | (uint32_t)cursor[i * 4 + 1] << 16 | (uint32_t)cursor[i * 4 + 2] << 8 | cursor[i * 4 + 3];
+			}
+		} else {
+			for (uint32_t i = 0; i < lineMap.size(); i++) {
+				lineMap[i] = (uint32_t)cursor[i * 4 + 3] << 24 | (uint32_t)cursor[i * 4 + 2] << 16 | (uint32_t)cursor[i * 4 + 1] << 8 | cursor[i * 4];
 			}
 		}
+		cursor += lineMap.size() * 4;
 	}
 
 	upvalueNames.resize(upvalues.size());
@@ -222,8 +228,14 @@ void Bytecode::Prototype::read_debug_info() {
 }
 
 uint8_t Bytecode::Prototype::get_next_byte() {
-	assert(prototypeSize < bytecode.fileBuffer.size(), "Prototype read would exceed end of buffer", bytecode.filePath, DEBUG_INFO);
-	return bytecode.fileBuffer[prototypeSize++];
+	assert(cursor < bufferEnd, "Prototype read would exceed end of buffer", bytecode.filePath, DEBUG_INFO);
+	return *cursor++;
+}
+
+void Bytecode::Prototype::get_bytes(void* dst, uint32_t count) {
+	assert(cursor + count <= bufferEnd, "Prototype read would exceed end of buffer", bytecode.filePath, DEBUG_INFO);
+	memcpy(dst, cursor, count);
+	cursor += count;
 }
 
 uint32_t Bytecode::Prototype::get_uleb128() {
@@ -266,12 +278,11 @@ uint64_t Bytecode::Prototype::get_uleb128_33() {
 }
 
 std::string Bytecode::Prototype::get_string() {
-	std::string string;
-
-	for (uint8_t byte = get_next_byte(); byte; byte = get_next_byte()) {
-		string += byte;
-	}
-
+	const uint8_t* start = cursor;
+	while (cursor < bufferEnd && *cursor) cursor++;
+	assert(cursor < bufferEnd, "Prototype string is missing null terminator", bytecode.filePath, DEBUG_INFO);
+	std::string string(reinterpret_cast<const char*>(start), cursor - start);
+	cursor++; // skip null terminator
 	return string;
 }
 
@@ -280,28 +291,28 @@ Bytecode::TableConstant Bytecode::Prototype::get_table_constant() {
 	const uint32_t type = get_uleb128();
 
 	switch (type) {
-	case BC_KTAB_NIL:
-	case BC_KTAB_FALSE:
-	case BC_KTAB_TRUE:
-		tableConstant.type = (BC_KTAB)type;
-		break;
-	case BC_KTAB_INT:
-		tableConstant.type = BC_KTAB_INT;
-		tableConstant.integer = get_uleb128();
-		break;
-	case BC_KTAB_NUM:
-		tableConstant.type = BC_KTAB_NUM;
-		tableConstant.number = get_uleb128();
-		tableConstant.number |= (uint64_t)get_uleb128() << 32;
-		break;
-	default:
-		tableConstant.type = BC_KTAB_STR;
-		tableConstant.string.resize(type - BC_KTAB_STR);
-		for (uint32_t i = 0; i < tableConstant.string.size(); i++) {
-			tableConstant.string[i] = get_next_byte();
+		case BC_KTAB_NIL:
+		case BC_KTAB_FALSE:
+		case BC_KTAB_TRUE:
+			tableConstant.type = (BC_KTAB)type;
+			break;
+		case BC_KTAB_INT:
+			tableConstant.type = BC_KTAB_INT;
+			tableConstant.integer = get_uleb128();
+			break;
+		case BC_KTAB_NUM:
+			tableConstant.type = BC_KTAB_NUM;
+			tableConstant.number = get_uleb128();
+			tableConstant.number |= (uint64_t)get_uleb128() << 32;
+			break;
+		default: {
+			const uint32_t length = type - BC_KTAB_STR;
+			assert(cursor + length <= bufferEnd, "Prototype read would exceed end of buffer", bytecode.filePath, DEBUG_INFO);
+			tableConstant.type = BC_KTAB_STR;
+			tableConstant.string.assign(reinterpret_cast<const char*>(cursor), length);
+			cursor += length;
+			break;
 		}
-		break;
 	}
-
 	return tableConstant;
 }
