@@ -113,6 +113,27 @@ static BC_OP get_op_type(const uint8_t& byte, const uint8_t& version) {
 	return (BC_OP)(version == Bytecode::BC_VERSION_1 && byte >= BC_OP_ISTYPE ? (byte >= BC_OP_TGETR - 2 ? (byte >= BC_OP_TSETR - 3 ? byte + 4 : byte + 3) : byte + 2) : byte);
 }
 
+static BC_OP normalize_jit_opcode(BC_OP op) {
+    switch (op) {
+        case BC_OP_JFORI: return BC_OP_FORI;
+        case BC_OP_IFORL: 
+        case BC_OP_JFORL: return BC_OP_FORL;
+        case BC_OP_IITERL: 
+        case BC_OP_JITERL: return BC_OP_ITERL;
+        case BC_OP_ILOOP: 
+        case BC_OP_JLOOP: return BC_OP_LOOP;
+        
+		case BC_OP_ISTYPE: 
+        case BC_OP_ISNUM:
+        case BC_OP_FUNCF: case BC_OP_IFUNCF: case BC_OP_JFUNCF:
+        case BC_OP_FUNCV: case BC_OP_IFUNCV: case BC_OP_JFUNCV:
+        case BC_OP_FUNCC: case BC_OP_FUNCCW:
+            return BC_OP_INVALID;
+            
+        default: return op;
+    }
+}
+
 static bool is_op_abc_format(const BC_OP& instruction) {
 	switch (instruction) {
 	case BC_OP_ADDVN:

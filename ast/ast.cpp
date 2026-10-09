@@ -1388,12 +1388,26 @@ void Ast::build_slot_scopes(Function& function, std::vector<Statement*>& block, 
 											*function.slotScopeCollector.slotInfos[targetSlot].slotScopes.back() = *targetSlotScope;
 											function.slotScopeCollector.slotInfos[targetSlot].slotScopes.pop_back();
 										}
-
 										function.slotScopeCollector.slotInfos[targetSlot].activeSlotScope = targetSlotScope;
 										function.slotScopeCollector.extend_scope(targetSlot, function.get_scope_begin_from_label(targetLabel, (*targetSlotScope)->scopeEnd));
 										break;
 									}
-
+									if (block[i]->type == AST_STATEMENT_CONDITION
+										&& !block[i]->assignment.variables.size()
+										&& conditionBlocks.size()) {
+										for (uint32_t j = conditionBlocks.size(); j--;) {
+											if (!conditionBlocks[j].size()) continue;
+											Statement* lastJump = conditionBlocks[j].back();
+											if ((lastJump->type == AST_STATEMENT_CONDITION
+													|| lastJump->type == AST_STATEMENT_GOTO
+													|| lastJump->type == AST_STATEMENT_BREAK)
+												&& lastJump->instruction.target != block[i]->instruction.target
+												&& lastJump->instruction.target > block[i]->instruction.id) {
+												block[i]->instruction.target = lastJump->instruction.target;
+												break;
+											}
+										}
+									}
 									continue;
 								}
 							}
@@ -2777,10 +2791,13 @@ void Ast::build_if_statements_from_map(Function& function, std::vector<Statement
 	for (uint32_t i = 0; i < block.size(); i++) {
 		switch (block[i]->type) {
 		case AST_STATEMENT_GOTO:
-			if (!offsetMap.contains(block[i])) continue;
-		case AST_STATEMENT_CONDITION:
+		case AST_STATEMENT_CONDITION: {
+			const auto offsetIt = offsetMap.find(block[i]);
+			if (offsetIt == offsetMap.end()) continue;
+
+			index = offsetIt->second + i;
+
 			function.remove_jump(block[i]->instruction.id, block[i]->instruction.target);
-			index = offsetMap[block[i]] + i;
 
 			if (block[i]->type == AST_STATEMENT_GOTO && block[i]->instruction.type == Bytecode::BC_OP_JMP) {
 				block[i]->type = AST_STATEMENT_EMPTY;
@@ -2792,29 +2809,50 @@ void Ast::build_if_statements_from_map(Function& function, std::vector<Statement
 			}
 
 			block[i]->block.reserve(index - i);
-			block[i]->block.insert(block[i]->block.begin(), block.begin() + i + 1, block.begin() + index + 1);
+			block[i]->block.insert(
+				block[i]->block.begin(),
+				block.begin() + i + 1,
+				block.begin() + index + 1
+			);
 			block.erase(block.begin() + i + 1, block.begin() + index + 1);
 
 			if (block[i]->type == AST_STATEMENT_CONDITION
 				&& block[i]->block.size()
 				&& block[i]->block.back()->type == AST_STATEMENT_GOTO
 				&& block[i]->block.back()->instruction.type != Bytecode::BC_OP_LOOP) {
-				index = offsetMap[block[i]->block.back()] + i;
-				block.emplace(block.begin() + i + 1, new_statement(AST_STATEMENT_ELSE));
-				block[i + 1]->block.reserve(index - i);
-				block[i + 1]->block.insert(block[i + 1]->block.begin(), block.begin() + i + 2, block.begin() + index + 2);
-				block.erase(block.begin() + i + 2, block.begin() + index + 2);
-				function.remove_jump(block[i]->block.back()->instruction.id, block[i]->block.back()->instruction.target);
-				block[i]->block.back()->type = AST_STATEMENT_EMPTY;
-				blockInfo.index = i + 1;
-				build_if_statements_from_map(function, block[i + 1]->block, &blockInfo, offsetMap);
+				const auto closingGotoIt = offsetMap.find(block[i]->block.back());
+
+				if (closingGotoIt != offsetMap.end()) {
+					index = closingGotoIt->second + i;
+
+					block.emplace(block.begin() + i + 1, new_statement(AST_STATEMENT_ELSE));
+					block[i + 1]->block.reserve(index - i);
+					block[i + 1]->block.insert(
+						block[i + 1]->block.begin(),
+						block.begin() + i + 2,
+						block.begin() + index + 2
+					);
+					block.erase(block.begin() + i + 2, block.begin() + index + 2);
+
+					function.remove_jump(
+						block[i]->block.back()->instruction.id,
+						block[i]->block.back()->instruction.target
+					);
+
+					block[i]->block.back()->type = AST_STATEMENT_EMPTY;
+
+					blockInfo.index = i + 1;
+					build_if_statements(function, block[i + 1]->block, &blockInfo);
+				}
 			}
 
 			if (block[i]->type == AST_STATEMENT_GOTO) block[i]->assignment.expressions.emplace_back(new_primitive(1));
+
 			block[i]->type = AST_STATEMENT_IF;
 			blockInfo.index = i;
-			build_if_statements_from_map(function, block[i]->block, &blockInfo, offsetMap);
+			build_if_statements(function, block[i]->block, &blockInfo);
 			continue;
+		}
 		case AST_STATEMENT_NUMERIC_FOR:
 		case AST_STATEMENT_GENERIC_FOR:
 			build_if_statements(function, block[i]->block, nullptr);
@@ -2910,8 +2948,27 @@ void Ast::build_if_statements(Function& function, std::vector<Statement*>& block
 	BlockInfo blockInfo = { .block = block, .previousBlock = previousBlock };
 	uint32_t index, targetLabel;
 	std::vector<uint32_t> indexes;
-	thread_local std::unordered_map<Statement*, uint32_t> offsetMap;
+	thread_local std::deque<std::unordered_map<Statement*, uint32_t>> offsetMapStack;
+	thread_local size_t offsetMapDepth = 0;
+
+	if (offsetMapDepth == offsetMapStack.size()) {
+		offsetMapStack.emplace_back();
+	}
+
+	std::unordered_map<Statement*, uint32_t>& offsetMap = offsetMapStack[offsetMapDepth];
+	++offsetMapDepth;
+
+	struct OffsetMapDepthGuard {
+		size_t& depth;
+		explicit OffsetMapDepthGuard(size_t& depth_) : depth(depth_) {}
+		~OffsetMapDepthGuard() {
+			if (depth) --depth;
+		}
+	} offsetMapDepthGuard(offsetMapDepth);
+
 	offsetMap.clear();
+	offsetMap.max_load_factor(0.7f);
+	offsetMap.reserve(block.size() + 1);
 
 	for (uint32_t i = 0; i < block.size(); i++) {
 		if (indexes.size()
@@ -3682,7 +3739,7 @@ bool Ast::is_valid_block(Function& function, const BlockInfo& blockInfo, const u
 	if (blockInfo.index == blockInfo.block.size() - 1) return blockInfo.previousBlock ? is_valid_block(function, *blockInfo.previousBlock, blockBegin) : true;
 	const uint32_t blockEnd = blockInfo.block[blockInfo.index + 1]->instruction.label != INVALID_ID
 		? function.labels[blockInfo.block[blockInfo.index + 1]->instruction.label].target : blockInfo.block[blockInfo.index + 1]->instruction.id;
-	return blockEnd == INVALID_ID ? true : (blockEnd > blockBegin ? function.is_valid_block_range(blockBegin, blockEnd - 1, false) : true);
+	return blockEnd == INVALID_ID ? true : (blockEnd > blockBegin ? function.is_valid_block_range(blockBegin, blockEnd - 1, true) : true);
 }
 
 void Ast::check_valid_name(Constant* const& constant) {

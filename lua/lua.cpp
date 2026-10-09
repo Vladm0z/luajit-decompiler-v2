@@ -873,70 +873,136 @@ void Lua::write_number(const double& number) {
 }
 
 void Lua::write_string(const std::string& string) {
-	char escapeSequence[] = "\\x00";
+	static constexpr char BACKSLASH = 0x5C; // '\'
+
+	char escapeSequence[] = { BACKSLASH, 'x', '0', '0', '\0' };
 	uint32_t value;
 	uint8_t digit;
-	
+
 	for (uint32_t i = 0; i < string.size(); ) {
 		uint32_t start = i;
+
 		if (unrestrictedAscii) {
-			while (i < string.size() && string[i] != '"' && string[i] != '\\') i++;
+			while (i < string.size()
+				&& (uint8_t)string[i] >= ' '
+				&& string[i] != '"'
+				&& string[i] != BACKSLASH) {
+				i++;
+			}
 		} else {
-			while (i < string.size() && (uint8_t)string[i] >= ' ' && (uint8_t)string[i] <= '~' && string[i] != '"' && string[i] != '\\') i++;
+			while (i < string.size()
+				&& (uint8_t)string[i] >= ' '
+				&& (uint8_t)string[i] <= '~'
+				&& string[i] != '"'
+				&& string[i] != BACKSLASH) {
+				i++;
+			}
 		}
+
 		if (i > start) {
 			t_writeBuffer.append(string.data() + start, i - start);
 			if (i == string.size()) break;
 		}
 
-		value = string[i];
+		value = (uint8_t)string[i];
+
 		if (unrestrictedAscii || !(value & 0x80)) {
-			if ((string[i] >= ' ' && string[i] <= '~') || (unrestrictedAscii && string[i] >= 0x80)) {
-				switch (string[i]) {
-				case '"':
-				case '\\':
-					t_writeBuffer += '\\';
+			if ((value >= ' ' && value <= '~') || (unrestrictedAscii && value >= 0x80)) {
+				if (string[i] == '"' || string[i] == BACKSLASH) {
+					t_writeBuffer += BACKSLASH;
 				}
 				t_writeBuffer += string[i];
 				i++;
 				continue;
 			}
+
 			switch (string[i]) {
-			case '\a': write("\\a"); i++; continue;
-			case '\b': write("\\b"); i++; continue;
-			case '\t': write("\\t"); i++; continue;
-			case '\n': write("\\n"); i++; continue;
-			case '\v': write("\\v"); i++; continue;
-			case '\f': write("\\f"); i++; continue;
-			case '\r': write("\\r"); i++; continue;
+			case '\a':
+				t_writeBuffer += BACKSLASH;
+				t_writeBuffer += 'a';
+				i++;
+				continue;
+			case '\b':
+				t_writeBuffer += BACKSLASH;
+				t_writeBuffer += 'b';
+				i++;
+				continue;
+			case '\t':
+				t_writeBuffer += BACKSLASH;
+				t_writeBuffer += 't';
+				i++;
+				continue;
+			case '\n':
+				t_writeBuffer += BACKSLASH;
+				t_writeBuffer += 'n';
+				i++;
+				continue;
+			case '\v':
+				t_writeBuffer += BACKSLASH;
+				t_writeBuffer += 'v';
+				i++;
+				continue;
+			case '\f':
+				t_writeBuffer += BACKSLASH;
+				t_writeBuffer += 'f';
+				i++;
+				continue;
+			case '\r':
+				t_writeBuffer += BACKSLASH;
+				t_writeBuffer += 'r';
+				i++;
+				continue;
 			}
 		} else if ((value & 0xE0) == 0xC0) {
 			if (i + 1 < string.size()) {
-				value <<= 8; value |= string[i + 1];
+				value <<= 8;
+				value |= string[i + 1];
 				if ((value & 0xC0) == 0x80 && value >= 0xC2A0 && value <= 0xDFBF) {
-					t_writeBuffer += string[i]; t_writeBuffer += string[i + 1]; i += 2; continue;
+					t_writeBuffer += string[i];
+					t_writeBuffer += string[i + 1];
+					i += 2;
+					continue;
 				}
 			}
 		} else if ((value & 0xF0) == 0xE0) {
 			if (i + 2 < string.size()) {
-				value <<= 16; value |= (uint16_t)string[i + 1] << 8; value |= string[i + 2];
-				if ((value & 0xC0C0) == 0x8080 && ((value >= 0xE0A080 && value < 0xEDA080) || (value > 0xEDBFBF && value <= 0xEFBFBF))) {
-					t_writeBuffer += string[i]; t_writeBuffer += string[i + 1]; t_writeBuffer += string[i + 2]; i += 3; continue;
+				value <<= 16;
+				value |= (uint16_t)string[i + 1] << 8;
+				value |= string[i + 2];
+				if ((value & 0xC0C0) == 0x8080
+					&& ((value >= 0xE0A080 && value < 0xEDA080)
+						|| (value > 0xEDBFBF && value <= 0xEFBFBF))) {
+					t_writeBuffer += string[i];
+					t_writeBuffer += string[i + 1];
+					t_writeBuffer += string[i + 2];
+					i += 3;
+					continue;
 				}
 			}
 		} else if ((value & 0xF8) == 0xF0) {
 			if (i + 3 < string.size()) {
-				value <<= 24; value |= (uint32_t)string[i + 1] << 16; value |= (uint16_t)string[i + 2] << 8; value |= string[i + 3];
-				if ((value & 0xC0C0C0) == 0x808080 && value >= 0xF0908080 && value <= 0xF48FBFBF) {
-					t_writeBuffer += string[i]; t_writeBuffer += string[i + 1]; t_writeBuffer += string[i + 2]; t_writeBuffer += string[i + 3]; i += 4; continue;
+				value <<= 24;
+				value |= (uint32_t)string[i + 1] << 16;
+				value |= (uint16_t)string[i + 2] << 8;
+				value |= string[i + 3];
+				if ((value & 0xC0C0C0) == 0x808080
+					&& value >= 0xF0908080
+					&& value <= 0xF48FBFBF) {
+					t_writeBuffer += string[i];
+					t_writeBuffer += string[i + 1];
+					t_writeBuffer += string[i + 2];
+					t_writeBuffer += string[i + 3];
+					i += 4;
+					continue;
 				}
 			}
 		}
-		
+
 		for (uint8_t j = 2; j--;) {
 			digit = (string[i] >> j * 4) & 0xF;
 			escapeSequence[3 - j] = digit >= 0xA ? 'A' + digit - 0xA : '0' + digit;
 		}
+
 		t_writeBuffer += escapeSequence;
 		i++;
 	}

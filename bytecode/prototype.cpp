@@ -36,41 +36,33 @@ void Bytecode::Prototype::read_instructions() {
 	const bool isBigEndian = bytecode.header.flags & Bytecode::BC_F_BE;
 	for (uint32_t i = 0; i < instructions.size(); i++) {
 		assert(cursor + 4 <= bufferEnd, "Prototype read would exceed end of buffer", bytecode.filePath, DEBUG_INFO);
-		const uint8_t opByte = cursor[0];
-		const uint8_t byte1 = cursor[1];
-		const uint8_t byte2 = cursor[2];
-		const uint8_t byte3 = cursor[3];
-		cursor += 4;
-		instructions[i].type = get_op_type(opByte, bytecode.header.version);
-		assert(instructions[i].type < BC_OP_INVALID, "Prototype has invalid instruction (" + byte_to_string(instructions[i].type) + ")", bytecode.filePath, DEBUG_INFO);
-		switch (instructions[i].type) {
-		case BC_OP_ISTYPE:
-		case BC_OP_ISNUM:
-		case BC_OP_TGETR:
-		case BC_OP_TSETR:
-		case BC_OP_JFORI:
-		case BC_OP_IFORL:
-		case BC_OP_JFORL:
-		case BC_OP_IITERL:
-		case BC_OP_JITERL:
-		case BC_OP_ILOOP:
-		case BC_OP_JLOOP:
-		case BC_OP_FUNCF:
-		case BC_OP_IFUNCF:
-		case BC_OP_JFUNCF:
-		case BC_OP_FUNCV:
-		case BC_OP_IFUNCV:
-		case BC_OP_JFUNCV:
-		case BC_OP_FUNCC:
-		case BC_OP_FUNCCW:
-			assert(false, "Prototype has unsupported instruction (" + byte_to_string(instructions[i].type) + ")", bytecode.filePath, DEBUG_INFO);
-		}
-		instructions[i].a = byte1;
-		if (is_op_abc_format(instructions[i].type)) {
-			instructions[i].c = byte2;
-			instructions[i].b = byte3;
+		
+		uint8_t opByte, byteA, byteB, byteC;
+		if (isBigEndian) {
+			opByte = cursor[3];
+			byteA = cursor[2];
+			byteC = cursor[1];
+			byteB = cursor[0];
 		} else {
-			instructions[i].d = isBigEndian ? ((uint16_t)byte2 << 8 | byte3) : ((uint16_t)byte3 << 8 | byte2);
+			opByte = cursor[0];
+			byteA = cursor[1];
+			byteC = cursor[2];
+			byteB = cursor[3];
+		}
+		cursor += 4;
+		
+		instructions[i].type = normalize_jit_opcode(get_op_type(opByte, bytecode.header.version));
+		
+		if (instructions[i].type >= BC_OP_INVALID) {
+			assert(false, "Prototype has invalid instruction (" + byte_to_string(opByte) + ")", bytecode.filePath, DEBUG_INFO);
+		}
+		
+		instructions[i].a = byteA;
+		if (is_op_abc_format(instructions[i].type)) {
+			instructions[i].c = byteC;
+			instructions[i].b = byteB;
+		} else {
+			instructions[i].d = ((uint16_t)byteB << 8) | byteC;
 		}
 	}
 }

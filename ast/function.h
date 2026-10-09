@@ -150,19 +150,18 @@ struct Function {
 		return scopeEnd;
 	}
 
-	bool is_valid_block_range(const uint32_t& blockBegin, const uint32_t& blockEnd, const bool& ignoreFrontLabel) {
-		for (uint32_t i = labels.size(); i-- && labels[i].target >= blockBegin;) {
-			if (labels[i].target <= blockEnd
-				&& labels[i].jumpIds.size()
-				&& ((labels[i].jumpIds.front() < blockBegin
-						&& (labels[i].target != blockBegin
-							|| !ignoreFrontLabel))
-					|| labels[i].jumpIds.back() > blockEnd))
-				return false;
-		}
-
-		return true;
-	}
+ bool is_valid_block_range(const uint32_t& blockBegin, const uint32_t& blockEnd, const bool& ignoreFrontLabel) {
+ 	for (uint32_t i = labels.size(); i-- && labels[i].target >= blockBegin;) {
+ 		if (labels[i].target < blockEnd
+ 			&& labels[i].jumpIds.size()
+ 			&& ((labels[i].jumpIds.front() < blockBegin
+ 					&& (labels[i].target != blockBegin
+ 						|| !ignoreFrontLabel))
+ 				|| labels[i].jumpIds.back() > blockEnd))
+ 			return false;
+ 	}
+ 	return true;
+ }
 
 	const Bytecode::Prototype& prototype;
 	const bool isVariadic, hasDebugInfo;
