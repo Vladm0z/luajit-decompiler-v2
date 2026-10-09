@@ -1,5 +1,6 @@
 #include "..\main.h"
 #include <charconv>
+#include <cstdio>
 
 thread_local std::string t_writeBuffer;
 
@@ -854,22 +855,137 @@ void Lua::write_integer(uint64_t value) { write_integer_impl(t_writeBuffer, valu
 void Lua::write_integer(uint32_t value) { write_integer_impl(t_writeBuffer, value); }
 
 void Lua::write_number(const double& number) {
-    const uint64_t rawDouble = std::bit_cast<uint64_t>(number);
-    if ((rawDouble & DOUBLE_EXPONENT) == DOUBLE_SPECIAL) {
-        write(rawDouble & DOUBLE_SIGN ? "-1e309" : "1e309");
-        return;
-    }
+	const uint64_t rawDouble = std::bit_cast<uint64_t>(number);
+	if ((rawDouble & DOUBLE_EXPONENT) == DOUBLE_SPECIAL) {
+		write(rawDouble & DOUBLE_SIGN ? "-1e309" : "1e309");
+		return;
+	}
 
-    char buffer[64];
-    auto [ptr, ec] = std::to_chars(buffer, buffer + sizeof(buffer), number, std::chars_format::general);
-    
-    if (ec == std::errc()) {
-        t_writeBuffer.append(buffer, ptr - buffer);
-    } else {
-        // Fallback just in case
-        int len = std::snprintf(buffer, sizeof(buffer), "%1.17g", number);
-        t_writeBuffer.append(buffer, len);
-    }
+	if (std::isfinite(number) && number == std::floor(number)) {
+		// Safe exact integer range for double
+		if (number >= -9007199254740992.0 && number <= 9007199254740992.0) {
+			write_integer(static_cast<int64_t>(number));
+			return;
+		}
+
+		// Large integral double
+		char integerBuffer[512];
+		auto [intPtr, intEc] = std::to_chars(
+			integerBuffer,
+			integerBuffer + sizeof(integerBuffer),
+			number,
+			std::chars_format::fixed,
+			0
+		);
+
+		if (intEc == std::errc()) {
+			t_writeBuffer.append(integerBuffer, intPtr - integerBuffer);
+			return;
+		}
+
+		int len = std::snprintf(integerBuffer, sizeof(integerBuffer), "%.0f", number);
+		if (len > 0) {
+			if (static_cast<size_t>(len) >= sizeof(integerBuffer)) len = sizeof(integerBuffer) - 1;
+			t_writeBuffer.append(integerBuffer, static_cast<size_t>(len));
+		}
+		return;
+	}
+
+	char buffer[64];
+	auto [ptr, ec] = std::to_chars(buffer, buffer + sizeof(buffer), number);
+
+	if (ec != std::errc()) {
+		int len = std::snprintf(buffer, sizeof(buffer), "%.17g", number);
+		if (len > 0) {
+			if (static_cast<size_t>(len) >= sizeof(buffer)) len = sizeof(buffer) - 1;
+			t_writeBuffer.append(buffer, static_cast<size_t>(len));
+		}
+		return;
+	}
+
+	std::string_view text(buffer, static_cast<size_t>(ptr - buffer));
+
+	const size_t ePos = text.find_first_of("eE");
+	if (ePos == std::string_view::npos) {
+		t_writeBuffer.append(text.data(), text.size());
+		return;
+	}
+
+	const bool negative = !text.empty() && text[0] == '-';
+	const std::string_view mantissa = text.substr(
+		negative ? 1 : 0,
+		ePos - (negative ? 1 : 0)
+	);
+
+	size_t expPos = ePos + 1;
+	bool expNegative = false;
+
+	if (expPos < text.size() && (text[expPos] == '+' || text[expPos] == '-')) {
+		expNegative = text[expPos] == '-';
+		expPos++;
+	}
+
+	int exponent = 0;
+	while (expPos < text.size() && text[expPos] >= '0' && text[expPos] <= '9') {
+		exponent = exponent * 10 + (text[expPos] - '0');
+		expPos++;
+	}
+
+	if (expNegative) exponent = -exponent;
+
+	if (exponent < -4 || exponent >= 17) {
+		t_writeBuffer.append(text.data(), text.size());
+		return;
+	}
+
+	std::string digits;
+	size_t dot = mantissa.find('.');
+
+	if (dot == std::string_view::npos) {
+		digits.assign(mantissa.data(), mantissa.size());
+		dot = mantissa.size();
+	} else {
+		digits.append(mantissa.data(), dot);
+		digits.append(
+			mantissa.data() + dot + 1,
+			mantissa.size() - dot - 1
+		);
+	}
+
+	const int decimalPos = static_cast<int>(dot) + exponent;
+
+	std::string fixed;
+	if (negative) fixed.push_back('-');
+
+	if (decimalPos <= 0) {
+		fixed += "0.";
+		fixed.append(static_cast<size_t>(-decimalPos), '0');
+		fixed += digits;
+	} else if (decimalPos >= static_cast<int>(digits.size())) {
+		fixed += digits;
+		fixed.append(
+			static_cast<size_t>(decimalPos - static_cast<int>(digits.size())),
+			'0'
+		);
+	} else {
+		fixed.append(digits.data(), decimalPos);
+		fixed.push_back('.');
+		fixed.append(
+			digits.data() + decimalPos,
+			digits.size() - decimalPos
+		);
+	}
+
+	// Trim trailing fractional zeros.
+	const size_t dotPos = fixed.find('.');
+	if (dotPos != std::string::npos) {
+		size_t last = fixed.size() - 1;
+		while (last > dotPos && fixed[last] == '0') last--;
+		if (last == dotPos) last--;
+		fixed.erase(last + 1);
+	}
+
+	t_writeBuffer.append(fixed.data(), fixed.size());
 }
 
 void Lua::write_string(const std::string& string) {
@@ -885,6 +1001,7 @@ void Lua::write_string(const std::string& string) {
 		if (unrestrictedAscii) {
 			while (i < string.size()
 				&& (uint8_t)string[i] >= ' '
+				&& (uint8_t)string[i] != 0x7F
 				&& string[i] != '"'
 				&& string[i] != BACKSLASH) {
 				i++;
@@ -950,6 +1067,13 @@ void Lua::write_string(const std::string& string) {
 			case '\r':
 				t_writeBuffer += BACKSLASH;
 				t_writeBuffer += 'r';
+				i++;
+				continue;
+			case 0x7F:
+				t_writeBuffer += BACKSLASH;
+				t_writeBuffer += 'x';
+				t_writeBuffer += '7';
+				t_writeBuffer += 'F';
 				i++;
 				continue;
 			}
