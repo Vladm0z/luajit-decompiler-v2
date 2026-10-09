@@ -34,10 +34,18 @@ void Bytecode::Prototype::read_header() {
 
 void Bytecode::Prototype::read_instructions() {
 	const bool isBigEndian = bytecode.header.flags & Bytecode::BC_F_BE;
+	const bool isVersion1 = bytecode.header.version == Bytecode::BC_VERSION_1;
+
+	assert(
+		cursor + (static_cast<size_t>(instructions.size()) * 4) <= bufferEnd,
+		"Prototype read would exceed end of buffer",
+		bytecode.filePath,
+		DEBUG_INFO
+	);
+
 	for (uint32_t i = 0; i < instructions.size(); i++) {
-		assert(cursor + 4 <= bufferEnd, "Prototype read would exceed end of buffer", bytecode.filePath, DEBUG_INFO);
-		
 		uint8_t opByte, byteA, byteB, byteC;
+
 		if (isBigEndian) {
 			opByte = cursor[3];
 			byteA = cursor[2];
@@ -49,15 +57,24 @@ void Bytecode::Prototype::read_instructions() {
 			byteC = cursor[2];
 			byteB = cursor[3];
 		}
+
 		cursor += 4;
-		
-		instructions[i].type = normalize_jit_opcode(get_op_type(opByte, bytecode.header.version));
-		
-		if (instructions[i].type >= BC_OP_INVALID) {
-			assert(false, "Prototype has invalid instruction (" + byte_to_string(opByte) + ")", bytecode.filePath, DEBUG_INFO);
-		}
-		
+
+		const BC_OP rawOp = isVersion1
+			? get_op_type(opByte, Bytecode::BC_VERSION_1)
+			: static_cast<BC_OP>(opByte);
+
+		instructions[i].type = normalize_jit_opcode(rawOp);
+
+		assert(
+			instructions[i].type < BC_OP_INVALID,
+			"Prototype has invalid instruction (" + byte_to_string(opByte) + ")",
+			bytecode.filePath,
+			DEBUG_INFO
+		);
+
 		instructions[i].a = byteA;
+
 		if (is_op_abc_format(instructions[i].type)) {
 			instructions[i].c = byteC;
 			instructions[i].b = byteB;

@@ -77,6 +77,9 @@ struct ConditionGraph {
 		trueTarget->nodeLabel = trueTargetLabel;
 		falseTarget = new_node(Node::FALSE_TARGET);
 		falseTarget->nodeLabel = falseTargetLabel;
+
+		conditionNodes.reserve(16);
+		topo.reserve(16);
 	}
 
 	~ConditionGraph() {}
@@ -288,6 +291,7 @@ struct ConditionGraph {
 
 	bool topological_sort() {
 		topo.clear();
+		topo.reserve(conditionNodes.size());
 
 		for (auto node : conditionNodes) {
 			node->topoIndex = -1;
@@ -433,6 +437,7 @@ struct ConditionGraph {
 		if (!node) return;
 		thread_local std::unordered_set<Node*> seen;
 		seen.clear();
+		seen.reserve(node->preds.size());
 		for (auto it = node->preds.begin(); it != node->preds.end();) {
 			if (seen.count(it->from)) it = node->preds.erase(it);
 			else {
@@ -880,7 +885,8 @@ struct ConditionGraph {
 
 		std::unordered_map<Node*, Expression*> memo;
 		std::unordered_set<Node*> visiting;
-
+		memo.reserve(conditionNodes.size() * 2 + 1);
+		visiting.reserve(conditionNodes.size() + 1);
 		Expression* expression = build_generic_expression(root, memo, visiting);
 
 		if (!expression) return false;

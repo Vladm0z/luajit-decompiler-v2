@@ -2948,6 +2948,7 @@ void Ast::build_if_statements(Function& function, std::vector<Statement*>& block
 	BlockInfo blockInfo = { .block = block, .previousBlock = previousBlock };
 	uint32_t index, targetLabel;
 	std::vector<uint32_t> indexes;
+	indexes.reserve(block.size() / 4 + 4);
 	thread_local std::deque<std::unordered_map<Statement*, uint32_t>> offsetMapStack;
 	thread_local size_t offsetMapDepth = 0;
 

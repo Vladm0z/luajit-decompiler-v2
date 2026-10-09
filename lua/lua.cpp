@@ -13,8 +13,8 @@ Lua::~Lua() {
 
 void Lua::operator()() {
 	print_progress_bar();
-	const uint64_t estimatedSourceSize = bytecode.prototypesTotalSize * 3;
-	const size_t reserveSize = static_cast<size_t>(std::clamp<uint64_t>(estimatedSourceSize, 1ull << 20, 8ull << 20));
+	const uint64_t estimatedSourceSize = bytecode.prototypesTotalSize * 4;
+	const size_t reserveSize = static_cast<size_t>(std::clamp<uint64_t>(estimatedSourceSize, 1ull << 20, 16ull << 20));
 	
 	// Reuse string buffer per thread
 	t_writeBuffer.clear();
@@ -1184,7 +1184,7 @@ void Lua::write_indent() {
 
 void Lua::create_file() {
 #ifndef _DEBUG
-	if (!forceOverwrite && !g_isParallelMode.load()) {
+	if (!forceOverwrite && !g_isParallelMode.load(std::memory_order_relaxed)) {
 		file = CreateFileA(filePath.c_str(), GENERIC_READ, NULL, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 		if (file != INVALID_HANDLE_VALUE) {
 			close_file();

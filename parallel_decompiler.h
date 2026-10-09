@@ -83,8 +83,8 @@ inline size_t resolve_batch_size(size_t fileCount, unsigned int threadCount) {
         batch = 1;
     }
 
-    if (batch > 32) {
-        batch = 32;
+    if (batch > 128) {
+        batch = 128;
     }
 
     return batch;
@@ -198,7 +198,7 @@ inline void decompile_file_core(
 	tl_nsTotal += nsTotal;
 
     if (std::chrono::duration_cast<std::chrono::milliseconds>(t3 - t0).count() > 5000) {
-        ++g_slowFiles;
+        g_slowFiles.fetch_add(1, std::memory_order_relaxed);
     }
 }
 
@@ -225,26 +225,16 @@ inline void decompile_file_safe(
     const std::string & outputPath,
     const DecompilerConfig & config
 ) {
-    {
-        std::lock_guard<std::mutex> lock(g_print_mutex);
-        std::cerr << "[Start] " << inputPath << "\n";
-    }
-
     try {
         if (!detail::decompile_file_seh(inputPath, outputPath, config)) {
-            ++g_filesFailed;
+            g_filesFailed.fetch_add(1, std::memory_order_relaxed);
             return;
         }
 
-        ++g_filesProcessed;
-
-        {
-            std::lock_guard<std::mutex> lock(g_print_mutex);
-            std::cerr << "[Done]  " << inputPath << "\n";
-        }
+        g_filesProcessed.fetch_add(1, std::memory_order_relaxed);
     }
     catch (const Error& error) {
-        ++g_filesFailed;
+        g_filesFailed.fetch_add(1, std::memory_order_relaxed);
         std::lock_guard<std::mutex> lock(g_print_mutex);
         std::cerr
             << "[Error] " << inputPath << "\n"
@@ -252,12 +242,12 @@ inline void decompile_file_safe(
             << "  " << error.message << "\n";
     }
     catch (const std::exception& e) {
-        ++g_filesFailed;
+        g_filesFailed.fetch_add(1, std::memory_order_relaxed);
         std::lock_guard<std::mutex> lock(g_print_mutex);
         std::cerr << "[Error] " << inputPath << ": " << e.what() << "\n";
     }
     catch (...) {
-        ++g_filesFailed;
+        g_filesFailed.fetch_add(1, std::memory_order_relaxed);
         std::lock_guard<std::mutex> lock(g_print_mutex);
         std::cerr << "[Error] " << inputPath << ": Unknown exception/Assertion\n";
     }
@@ -277,10 +267,10 @@ inline void decompile_all_parallel(
     if (total == 1) {
         decompile_file_safe(inputPaths[0], outputPaths[0], config);
         
-        g_nsBytecode += detail::tl_nsBytecode;
-        g_nsAst += detail::tl_nsAst;
-        g_nsLua += detail::tl_nsLua;
-        g_nsTotal += detail::tl_nsTotal;
+        g_nsBytecode.fetch_add(detail::tl_nsBytecode, std::memory_order_relaxed);
+		g_nsAst.fetch_add(detail::tl_nsAst, std::memory_order_relaxed);
+		g_nsLua.fetch_add(detail::tl_nsLua, std::memory_order_relaxed);
+		g_nsTotal.fetch_add(detail::tl_nsTotal, std::memory_order_relaxed);
 
         std::lock_guard<std::mutex> lock(g_print_mutex);
         print(
@@ -368,9 +358,9 @@ inline void decompile_all_parallel(
         std::lock_guard<std::mutex> lock(g_print_mutex);
         print(
             "Parallel decompilation complete. Success: " +
-            std::to_string(g_filesProcessed.load()) +
+            std::to_string(g_filesProcessed.load(std::memory_order_relaxed)) +
             ", Failed: " +
-            std::to_string(g_filesFailed.load())
+            std::to_string(g_filesFailed.load(std::memory_order_relaxed))
         );
         print(
             "Phase time totals -> Bytecode: " +

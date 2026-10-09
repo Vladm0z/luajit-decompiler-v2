@@ -39,16 +39,17 @@ struct Function {
 		}
 
 		slotScopeCollector.previousId = prototype.instructions.size();
-		labels.reserve(32);
+		const size_t instructionCount = prototype.instructions.size();
+
+		labels.reserve(instructionCount / 8 + 16);
 		upvalues.reserve(prototype.upvalues.size());
 		parameterNames.reserve(prototype.header.parameters);
-		usedGlobals.reserve(16);
-		usedNames.reserve(64);
+		usedGlobals.reserve(instructionCount / 32 + 16);
+		usedNames.reserve(instructionCount / 8 + 64);
 		childFunctions.reserve(8);
-		block.reserve(prototype.instructions.size());
-
-		slotScopeCollector.upvalueInfos.reserve(prototype.instructions.size() / 8 + 8);
-		slotScopeCollector.upvalueScopes.reserve(prototype.instructions.size() / 8 + 8);
+		block.reserve(instructionCount);
+		slotScopeCollector.upvalueInfos.reserve(instructionCount / 8 + 8);
+		slotScopeCollector.upvalueScopes.reserve(instructionCount / 8 + 8);
 	}
 
 	~Function() {}

@@ -445,11 +445,16 @@ int main(int argc, char* argv[]) {
 }
 
 void print(const std::string& message) {
-	WriteConsoleA(CONSOLE_OUTPUT, (message + '\n').data(), message.size() + 1, NULL, NULL);
+	const std::string text = message + '\n';
+	DWORD written = 0;
+
+	if (!WriteConsoleA(CONSOLE_OUTPUT, text.data(), (DWORD)text.size(), &written, NULL)) {
+		WriteFile(CONSOLE_OUTPUT, text.data(), (DWORD)text.size(), &written, NULL);
+	}
 }
 
 void print_progress_bar(const double& progress, const double& total) {
-    if (g_isParallelMode.load()) return;
+    if (g_isParallelMode.load(std::memory_order_relaxed)) return;
 	static char PROGRESS_BAR[] = "\r[====================]";
 
 	double ratio = total > 0.0 ? progress / total : 1.0;
@@ -467,7 +472,7 @@ void print_progress_bar(const double& progress, const double& total) {
 }
 
 void erase_progress_bar() {
-    if (g_isParallelMode.load()) return;
+    if (g_isParallelMode.load(std::memory_order_relaxed)) return;
 	static constexpr char PROGRESS_BAR_ERASER[] = "\r                      \r";
 
 	if (!isProgressBarActive) return;
